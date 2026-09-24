@@ -1,0 +1,6 @@
+data/
+build/
+__pycache__/
+*.zevtc
+*.evtc
+reference/
