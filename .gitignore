@@ -1,6 +1,25 @@
-data/
+# Build output and logs
 build/
 __pycache__/
 *.zevtc
 *.evtc
+
+# Local data: logs, TopStats reports, anything with players' account names
+data/
+
+# Third-party reference material (Elite Insights source, ArcDPS docs): read locally, not redistributed
 reference/
+
+# Development-only checks: the Python prototype and the comparisons against TopStats and the C++ analysis
+# (they need local logs and reports in data/)
+tools/boons.py
+tools/check_cpp.py
+tools/compare_summary.py
+tools/compare_topstats.py
+tools/evtc.py
+tools/fight_stats.py
+tools/instant_casts.py
+tools/skills.py
+tools/spec_compare.py
+tools/timeline.py
+tools/cast_rules.json

@@ -19,8 +19,11 @@ namespace Session
 		std::filesystem::path Folder;
 	};
 
-	// Logs written in the last aLookbackHours are loaded at start, so a reload mid-raid keeps the evening.
-	void Start(const std::filesystem::path& aFolder, int aLookbackHours);
+	// At start the last play session loads: the newest log and every one before it back to a break of
+	// aSessionGapHours or more between two logs. New logs load as they are written.
+	// aEvidenceFile: which skills gave which boons, learned from every log read so far and kept between sessions
+	// (empty: learn from each round alone).
+	void Start(const std::filesystem::path& aFolder, int aSessionGapHours, const std::filesystem::path& aEvidenceFile = {});
 	void Stop();
 	Snapshot Get();
 

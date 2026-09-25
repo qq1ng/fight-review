@@ -22,7 +22,7 @@ namespace
 {
 	constexpr const char* KB_TOGGLE = "KB_FIGHTREVIEW_TOGGLE";
 	constexpr const char* QA_MENU_ITEM = "QA_FIGHTREVIEW_MENU";
-	constexpr int kLookbackHours = 8;
+	constexpr int kSessionGapHours = 3; // a break this long between two logs ends a play session
 
 	AddonDefinition_t s_AddonDef{};
 	AddonAPI_t*       s_Api = nullptr;
@@ -116,9 +116,10 @@ namespace
 		std::filesystem::create_directories(addonDir, ec);
 		Icons::Init(s_Api);
 		SkillIcons::Init(s_Api, addonDir / "skill_icons.txt");
+		Ui::LoadSettings(addonDir / "settings.txt");
 
 		std::filesystem::path folder = LogFolder();
-		Session::Start(folder, kLookbackHours);
+		Session::Start(folder, kSessionGapHours, addonDir / "boon_evidence.txt");
 		std::string msg = "Watching " + folder.string();
 		s_Api->Log(LOGL_INFO, ADDON_NAME, msg.c_str());
 

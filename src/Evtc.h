@@ -53,6 +53,9 @@ namespace Evtc
 		SC_ChangeDown = 5,
 		SC_Spawn = 6,
 		SC_Despawn = 7,
+		SC_HealthPct = 8,     // dst: health % x 10000
+		SC_Position = 19,     // dst: float x, y; value: float z
+		SC_Marker = 37,       // value: marker id; buff: 1 = commander tag
 		SC_SqCombatStart = 9,
 		SC_SqCombatEnd = 10,
 		SC_WeapSwap = 11,
@@ -62,6 +65,7 @@ namespace Evtc
 		SC_BuffActive = 27,
 		SC_BuffDeactive = 28,
 		SC_BuffInfo = 30,
+		SC_MapId = 25,        // src: map id (968 = Edge of the Mists)
 		SC_IdToGuid = 46,
 		SC_ExtensionCombat = 49,
 		SC_MissileCreate = 57,
@@ -73,6 +77,7 @@ namespace Evtc
 		SC_BuffChange = 70,
 		SC_BuffRemoveSingle = 71,
 		SC_BuffRemoveAll = 72,
+		SC_Teleport = 85,     // src: moved by a teleport (own or an enemy pull)
 	};
 
 	constexpr uint8_t IFF_FOE = 1;

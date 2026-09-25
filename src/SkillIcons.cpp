@@ -15,6 +15,7 @@
 #include <Windows.h>
 #include <winhttp.h>
 
+#include "imgui/imgui.h"
 #include "nexus/Nexus.h"
 
 #pragma comment(lib, "winhttp.lib")
@@ -44,6 +45,20 @@ namespace SkillIcons
 			std::string key;
 			for (char c : aName) { if (std::isalnum(static_cast<unsigned char>(c))) { key += static_cast<char>(std::tolower(static_cast<unsigned char>(c))); } }
 			if (auto it = byName.find(key); it != byName.end()) { return it->second; }
+			// Icons Elite Insights' tables lack: the GW2 API's CC fact icons, and the user's picks
+			static const std::unordered_map<std::string, const char*> effects = {
+				{"knockdown", "https://render.guildwars2.com/file/7632087376D36B0D100F1B07BE53F154BC337D7C/2440716.png"},
+				{"knockback", "https://render.guildwars2.com/file/400B7FD39724FBD700B94AB8AB52B5B9167646F4/2440715.png"},
+				{"launch", "https://render.guildwars2.com/file/B4087CEB5CC006172E0A09DADC5452807A0CA3F7/2440712.png"},
+				{"pull", "https://render.guildwars2.com/file/D5F6EBC4630F0E10F3DDB7A6DBB63592CD4B00BC/2440717.png"},
+				// the Troubadour's instrument effects: the icon of the skill that plays it (the user, 2026-09-25)
+				{"harpplaying", "https://render.guildwars2.com/file/C1BCF465DE1DAB00E00B0F1494ABDB2D7F57BECA/3680162.png"},
+				{"fluteplaying", "https://render.guildwars2.com/file/CFE30B5052A2AA67D9A8AE5FC1FBA0A56C64584C/3680160.png"},
+				{"luteplaying", "https://render.guildwars2.com/file/4CAA3750145A55B7E73D5EB9917590EC45657BE7/3680159.png"},
+				{"drumplaying", "https://render.guildwars2.com/file/E061ECE20A34DC281C0E3EB8FB90094549E87941/3680161.png"},
+				// a burst of damage in the Deaths tab (the user's pick)
+				{"damageburst", "https://wiki.guildwars2.com/images/1/1b/Burst_of_Light.png"}};
+			if (auto it = effects.find(key); it != effects.end()) { return it->second; }
 			return nullptr;
 		}
 
@@ -174,6 +189,11 @@ namespace SkillIcons
 	{
 		if (!s_Api || aSkill == 0) { return nullptr; }
 		if (auto it = s_Textures.find(aSkill); it != s_Textures.end() && it->second) { return it->second; }
+		// not loaded yet: ask Nexus at most once a second per icon (the Deaths and spike views draw dozens every frame)
+		static std::unordered_map<int32_t, double> asked;
+		double now = ImGui::GetTime();
+		if (auto it = asked.find(aSkill); it != asked.end() && now - it->second < 1.0) { return nullptr; }
+		asked[aSkill] = now;
 		std::string url;
 		if (const char* known = KnownUrl(aSkill, aName)) { url = known; }
 		else if (aSkill > 0)

@@ -1,7 +1,10 @@
 """Compare the C++ analysis (build/release/frcheck.exe) with the Python prototype on some logs.
 
+Cast counts differ by design (the C++ counts learned instant casts, notes/HANDOFF.md), so they are compared only
+with --casts.
+
 Usage:
-    python tools/check_cpp.py <file.zevtc> [more ...]
+    python tools/check_cpp.py [--casts] <file.zevtc> [more ...]
 """
 import os
 import subprocess
@@ -18,7 +21,7 @@ EXE = os.path.join(HERE, "..", "build", "release", "frcheck.exe")
 BOON_ORDER = [740, 725, 1187, 30328, 717, 718, 726, 743, 1122, 719, 26980, 873]
 
 
-def main(paths):
+def main(paths, casts=False):
     bad = 0
     for path in paths:
         out = subprocess.run([EXE, path], capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -47,8 +50,9 @@ def main(paths):
             cc = {"heal": int(c[5]), "barrier": int(c[6]), "damage": int(c[7]), "damage_all": int(c[8]),
                   "active": int(c[9]), "strips": int(c[10]), "cleanses": int(c[11]), "evades": int(c[12]),
                   "blocks": int(c[13]), "invulns": int(c[14])}
-            py["casts"] = sum(su.casts[a].values())
-            cc["casts"] = int(c[-1])
+            if casts:
+                py["casts"] = sum(su.casts[a].values())
+                cc["casts"] = int(c[-1])
             for k in py:
                 if py[k] != cc[k]:
                     diffs.append(f"{acc} {k}: py {py[k]} c++ {cc[k]}")
@@ -67,4 +71,5 @@ def main(paths):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    args = sys.argv[1:]
+    sys.exit(main([a for a in args if a != "--casts"], "--casts" in args))

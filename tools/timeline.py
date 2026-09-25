@@ -1,8 +1,8 @@
 """A fight's damage over time and its spikes: when our squad's damage landed together, and when the enemy's did.
 
 Damage per second, out (squad and its minions on anyone not friendly) and in (anyone not friendly on squad
-members). A spike is a second that is the highest within 3 s either side, at least 1.6x the fight's median
-second and at least 35% of its biggest second.
+members). A spike is a second that is the highest within 2 s either side, at least 1.4x the fight's median
+second and at least 50% of its biggest second (tuned with tools/spike_sweep.py, 2026-09-24).
 
 Usage:
     python tools/timeline.py <file.zevtc>
@@ -15,9 +15,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from evtc import Log, SRC, DST, VALUE, BUFF_DMG, SRC_MASTER, BUFF, RESULT, STATECHANGE, TIME
 
-SPIKE_RADIUS_S = 3
-SPIKE_OVER_MEDIAN = 1.6
-SPIKE_OF_MAX = 0.35
+SPIKE_RADIUS_S = 2
+SPIKE_OVER_MEDIAN = 1.4
+SPIKE_OF_MAX = 0.5
 
 
 def spikes(series):

@@ -26,6 +26,7 @@ target_compile_definitions(miniz PUBLIC MINIZ_NO_STDIO MINIZ_NO_TIME MINIZ_NO_AR
 add_library(fr_core STATIC
     src/Evtc.cpp
     src/Analysis.cpp
+    src/EvidenceFile.cpp
     src/InstantCasts.cpp
 )
 target_include_directories(fr_core PUBLIC src external)
@@ -37,7 +38,7 @@ add_library(FightReview SHARED
     src/Icons.cpp
     src/Session.cpp
     src/SkillIcons.cpp
-    src/Ui.cpp src/UiCommon.cpp src/UiReview.cpp src/UiCompare.cpp src/UiSquad.cpp src/UiFight.cpp
+    src/Ui.cpp src/UiCommon.cpp src/UiReview.cpp src/UiCompare.cpp src/UiSquad.cpp src/UiFight.cpp src/UiStability.cpp src/UiRound.cpp src/UiDeaths.cpp
 )
 target_include_directories(FightReview PRIVATE src external)
 target_compile_definitions(FightReview PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
@@ -61,7 +62,7 @@ add_library(imgui_checked STATIC
 )
 target_include_directories(imgui_checked PUBLIC external/imgui external tools/uishot)
 target_compile_definitions(imgui_checked PUBLIC IMGUI_USER_CONFIG="uishot_config.h")
-add_executable(fr_uishot tools/uishot/main.cpp src/Icons.cpp src/Session.cpp src/SkillIcons.cpp src/Ui.cpp src/UiCommon.cpp src/UiReview.cpp src/UiCompare.cpp src/UiSquad.cpp src/UiFight.cpp)
+add_executable(fr_uishot tools/uishot/main.cpp src/Icons.cpp src/Session.cpp src/SkillIcons.cpp src/Ui.cpp src/UiCommon.cpp src/UiReview.cpp src/UiCompare.cpp src/UiSquad.cpp src/UiFight.cpp src/UiStability.cpp src/UiRound.cpp src/UiDeaths.cpp)
 target_include_directories(fr_uishot PRIVATE src external tools/uishot)
 target_compile_definitions(fr_uishot PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(fr_uishot PRIVATE fr_core imgui_checked d3d11 dxgi windowscodecs d3dcompiler winhttp)
