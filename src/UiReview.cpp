@@ -3,6 +3,7 @@
 // Healing /s), a skill the skill detail. The Tonight tab follows the same measures and fixes over the night.
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <set>
 #include <utility>
 #include <vector>
@@ -20,9 +21,12 @@ namespace Ui
 		constexpr int kNoMetric = -1;
 
 		// Where a measure stands among your main jobs: 0 = first, -1 = not one
+		// (what became of your stability ranks with stability: one job seen three ways)
 		int JobRank(const std::vector<std::string>& aJobs, const std::string& aMeasure)
 		{
-			for (size_t i = 0; i < aJobs.size(); i++) { if (aMeasure == aJobs[i]) { return static_cast<int>(i); } }
+			const bool stab = aMeasure == "Your stability at enemy spikes" || aMeasure == "Stability redundancy";
+			const std::string& want = stab ? std::string("Stability to subgroup") : aMeasure;
+			for (size_t i = 0; i < aJobs.size(); i++) { if (want == aJobs[i]) { return static_cast<int>(i); } }
 			return -1;
 		}
 
@@ -31,6 +35,9 @@ namespace Ui
 		const char* const kJobRevives = "Rounds with a revive skill";
 		const char* const kJobNegated = "Attacks negated /min";
 		const char* const kJobDistortion = "Distortion timed with enemy spikes";
+		const char* const kJobDowns = "Down contribution";
+		const char* const kJobStabAtSpikes = "Your stability at enemy spikes";
+		const char* const kJobStabRedundancy = "Stability redundancy";
 
 		enum FixKind { F_Skill, F_Measure, F_Cc, F_Down };
 
@@ -47,10 +54,42 @@ namespace Ui
 			double      You = 0, Them = 0;
 		};
 
+		// The share of a round's seconds with fighting in them (either side dealt damage): chases and regrouping have none
+		double FightingShare(const Fight& f)
+		{
+			size_t n = std::min(f.OutPerS.size(), f.InPerS.size());
+			if (n == 0) { return 1.0; }
+			size_t busy = 0;
+			for (size_t s = 0; s < n; s++) { busy += f.OutPerS[s] + f.InPerS[s] > 0; }
+			return std::max(0.05, double(busy) / n);
+		}
+
 		bool InEnemySpike(const Fight& f, int32_t aMs)
 		{
-			for (int64_t t : f.TheirSpikesMs) { if (aMs >= t - 1000 && aMs <= t + 4000) { return true; } }
-			return false;
+			return SpikeOf(f.TheirSpikesMs, aMs) >= 0;
+		}
+
+		// A build's key skill on time (the Snow Crows guides, 2026-09-29): jobs named "<skill> in our spike" (cast within
+		// 2 s of our spike's peak: Well of Corruption, Nightfall, Crescendo on the main call) or "<skill> before enemy
+		// spikes" (in the 4 s before one: stability ahead of their CC). Returns the skill and the timing class, or -1.
+		const char* const kInOurSpike = " in our spike";
+		const char* const kBeforeTheirs = " before enemy spikes";
+		std::pair<std::string, int> KeySkillOf(const std::string& aJob)
+		{
+			for (auto [suffix, window] : {std::pair<const char*, int>{kInOurSpike, Analysis::T_IntoOurs}, {kBeforeTheirs, Analysis::T_AheadOfTheirs}})
+			{
+				size_t n = std::strlen(suffix);
+				if (aJob.size() > n && aJob.compare(aJob.size() - n, n, suffix) == 0) { return {aJob.substr(0, aJob.size() - n), window}; }
+			}
+			return {"", -1};
+		}
+
+		// A player's casts of a skill (by name: every id of it) in that timing class, and all of them
+		std::pair<int, int> KeyCasts(const Ctx& c, const Player& p, const std::string& aSkill, int aWindow)
+		{
+			int in = 0, all = 0;
+			for (auto& [id, row] : p.Skills) { if (row.Casts && c.Name(id) == aSkill) { in += row.Timing[aWindow]; all += row.Casts; } }
+			return {in, all};
 		}
 
 		// Rounds in scope a player played on this spec (at least 1)
@@ -82,12 +121,15 @@ namespace Ui
 					Fix f;
 					f.Kind = F_Measure; f.Metric = c.RoleMetric; f.Key = "m:" + m.Name; f.Subject = m.Name;
 					f.What = y <= 0 ? "none" : "lower";
-					f.You = y; f.Them = t; f.YouText = Num(y); f.ThemText = Num(t); f.Unit = RateUnit(m);
+					f.You = y; f.Them = t; f.YouText = Num(y); f.ThemText = Num(t); f.Unit = RateUnit(m, you);
 					f.Score = (t - y) / t;
 					out.push_back(f);
 				}
 			}
-			if (c.SameSpec && Known(m, you) && Known(m, vs))
+			// Not for stability: a build gives it from many skills, so one skill's casts or timing says little (the user,
+			// 2026-10-01: Power Break "cast late", then "fewer casts", on a Troubadour); CC covered, the stability that
+			// blocked CC and the stability left over judge it whole
+			if (c.SameSpec && Known(m, you) && Known(m, vs) && c.RoleMetric != kMetricGroupBoon + Analysis::kStability)
 			{
 				double total = std::max(Rate(m, vs, m.Total(vs)), 1e-9);
 				std::set<int32_t> skills;
@@ -130,7 +172,7 @@ namespace Ui
 			auto jobWeight = [&](int aMetric)
 			{
 				std::string job = aMetric == kMetricCleanses ? "Cleanses /min" : aMetric == kMetricStrips ? "Strips /min"
-					: aMetric >= kMetricGroupBoon ? std::string(Analysis::kBoonNames[aMetric - kMetricGroupBoon]) + " on subgroup" : "";
+					: aMetric >= kMetricGroupBoon ? std::string(Analysis::kBoonNames[aMetric - kMetricGroupBoon]) + " to subgroup" : "";
 				int rank = JobRank(c.Jobs, job);
 				return rank < 0 ? (c.Jobs.empty() ? 1.0 : 0.15) : 1.2 - 0.15 * rank;
 			};
@@ -168,14 +210,14 @@ namespace Ui
 				if (metric == c.RoleMetric) { continue; }
 				const Metric& mm = Metrics()[metric];
 				double y = Rate(mm, you, mm.Total(you)), t = Rate(mm, vs, mm.Total(vs));
-				measure(metric, mm.Name, y, t, "per minute", t - y >= 2.0 && t >= 1.25 * y, 0.6);
+				measure(metric, mm.Name, y, t, Totals(you) ? Lower(mm.Name) : "per minute", t - y >= 2.0 && t >= 1.25 * y, 0.6);
 			}
 			for (int b = 0; b < Analysis::kBoons; b++)
 			{
 				if (kMetricGroupBoon + b == c.RoleMetric) { continue; }
 				double y = GroupGenOver(Lookup(c, you).first, Lookup(c, you).second, you.Spec, b), t = GroupGenOver(Lookup(c, vs).first, Lookup(c, vs).second, vs.Spec, b);
 				bool stacks = c.F->Intensity[b];
-				measure(kMetricGroupBoon + b, std::string(Analysis::kBoonNames[b]) + " on your subgroup", y, t, stacks ? "stacks" : "% uptime",
+				measure(kMetricGroupBoon + b, std::string(Analysis::kBoonNames[b]) + " to your subgroup", y, t, stacks ? "stacks" : "% uptime",
 					t - y >= (stacks ? 0.3 : 8.0) && t >= 1.3 * y, 0.5);
 			}
 			if (you.StabEligible >= 3 && vs.StabEligible >= 3)
@@ -189,15 +231,15 @@ namespace Ui
 				int rank = JobRank(c.Jobs, aJob);
 				if (rank < 0 || !aEnough || t <= 0) { return; }
 				Fix f;
-				f.Kind = F_Measure; f.Key = std::string("m:") + aJob; f.Subject = aJob; f.Detail = aDetail;
+				f.Kind = F_Measure; f.Key = std::string("m:") + aJob; f.Subject = ShownName(aJob, c.OneRound); f.Detail = aDetail;
 				f.What = y <= 0 ? "none" : "lower";
 				f.You = y; f.Them = t; f.YouText = Num(y); f.ThemText = Num(t); f.Unit = aUnit;
 				f.Score = (t - y) / t * 0.6 * (1.2 - 0.15 * rank);
 				out.push_back(f);
 			};
 			{
-				double y = PerS(you, you.CcDealt) * 60, t = PerS(vs, vs.CcDealt) * 60;
-				jobMeasure(kJobCc, y, t, "per minute", t - y >= 1.0 && t >= 1.3 * y,
+				double y = CountRate(you, you.CcDealt), t = CountRate(vs, vs.CcDealt);
+				jobMeasure(kJobCc, y, t, Totals(you) ? "CC landed" : "per minute", t - y >= 1.0 && t >= 1.3 * y,
 					"You landed " + std::to_string(you.CcDealt) + " CC on enemies (" + Num(y) + " a minute), " + vs.Name + " " + std::to_string(vs.CcDealt) + " (" + Num(t) + ").");
 			}
 			{
@@ -209,10 +251,16 @@ namespace Ui
 					vs.Name + "'s in " + std::to_string(wt) + " of " + std::to_string(pt) + ".");
 			}
 			{
-				double y = PerS(you, you.Evades + you.Blocks + you.Invulns) * 60, t = PerS(vs, vs.Evades + vs.Blocks + vs.Invulns) * 60;
-				jobMeasure(kJobNegated, y, t, "per minute", t - y >= 3 && t >= 1.25 * y,
+				double y = CountRate(you, you.Evades + you.Blocks + you.Invulns), t = CountRate(vs, vs.Evades + vs.Blocks + vs.Invulns);
+				jobMeasure(kJobNegated, y, t, Totals(you) ? "attacks negated" : "per minute", t - y >= 3 && t >= 1.25 * y,
 					"You negated " + std::to_string(you.Evades + you.Blocks + you.Invulns) + " attacks (evaded, blocked or invulnerable), " +
 					vs.Name + " " + std::to_string(vs.Evades + vs.Blocks + vs.Invulns) + ".");
+			}
+			{
+				double y = Totals(you) ? double(you.DownContribution) : PerS(you, double(you.DownContribution));
+				double t = Totals(vs) ? double(vs.DownContribution) : PerS(vs, double(vs.DownContribution));
+				jobMeasure(kJobDowns, y, t, Totals(you) ? "damage into downs" : "per second", t > 0 && (t - y) / t >= 0.25,
+					"Your damage from 90% health to downs that died: " + Num(y) + " (estimated); " + vs.Name + " " + Num(t) + ". It counts damage that turned into kills, not damage spread over players who got away.");
 			}
 			{
 				auto [ty, ay] = CastsOnEnemySpikes(Lookup(c, you).first, Lookup(c, you).second, you.Spec, kTaleOfTheAugustQueen);
@@ -221,6 +269,43 @@ namespace Ui
 				jobMeasure(kJobDistortion, y, t, "% of Tale of the August Queen casts", at >= 2 && t - y >= 20,
 					std::to_string(ty) + " of your " + std::to_string(ay) + " Tale of the August Queen casts went off from 3 s before an enemy spike to 1 s into it; " +
 					vs.Name + ": " + std::to_string(tt) + " of " + std::to_string(at) + ".");
+			}
+			// Key skills on time: you cast it, but less of it landed when it counts
+			for (const std::string& job : c.Jobs)
+			{
+				auto [skill, window] = KeySkillOf(job);
+				if (window < 0) { continue; }
+				auto [iy, ay] = KeyCasts(c, you, skill, window);
+				auto [it, at] = KeyCasts(c, vs, skill, window);
+				double y = ay ? 100.0 * iy / ay : 0, t = at ? 100.0 * it / at : 0;
+				jobMeasure(job.c_str(), y, t, std::string("% of ") + skill + " casts", ay >= 1 && at >= 2 && t - y >= 25,
+					std::to_string(iy) + " of your " + std::to_string(ay) + " " + skill + " casts went off " + WindowLabel(window) + "; " +
+					vs.Name + ": " + std::to_string(it) + " of " + std::to_string(at) + ".");
+			}
+
+			// Your stability as a whole (the user, 2026-10-01): on your subgroup when enemy spikes peaked, and how much of
+			// it went on top of another provider's (TopStats' redundancy, lower is better)
+			if (you.StabSpikes >= 2 && vs.StabSpikes >= 2)
+			{
+				double y = 100.0 * you.StabSpikeShare / you.StabSpikes, t = 100.0 * vs.StabSpikeShare / vs.StabSpikes;
+				jobMeasure(kJobStabAtSpikes, y, t, "% of your subgroup", t - y >= 15,
+					"In the 3 s up to the peak of " + std::to_string(you.StabSpikes) + " enemy spikes, " + std::to_string(int(y + 0.5)) + "% of your subgroup had stability from you, on average; " +
+					vs.Name + ": " + std::to_string(int(t + 0.5)) + "% over " + std::to_string(vs.StabSpikes) + " spikes. Stability given in the seconds before their spike is on when it lands.");
+			}
+			if (you.StabAllyNominalMs >= 10000 && vs.StabAllyNominalMs >= 10000)
+			{
+				double y = 100.0 * double(you.StabRedundantMs) / double(you.StabAllyNominalMs), t = 100.0 * double(vs.StabRedundantMs) / double(vs.StabAllyNominalMs);
+				int rank = JobRank(c.Jobs, kJobStabRedundancy);
+				if (rank >= 0 && y - t >= 15)
+				{
+					Fix f;
+					f.Kind = F_Measure; f.Key = std::string("m:") + kJobStabRedundancy; f.Subject = kJobStabRedundancy; f.What = "higher";
+					f.Detail = std::to_string(int(y + 0.5)) + "% of your stability on allies went on top of another provider's that was still running; " + vs.Name + ": " +
+						std::to_string(int(t + 0.5)) + "%. It can be a deliberate pre-stack, so read it with the spikes: stability given while theirs runs out lasts longer.";
+					f.You = y; f.Them = t; f.YouText = Num(y); f.ThemText = Num(t); f.Unit = "% of your stability on allies";
+					f.Score = (y - t) / 100.0 * 0.6 * (1.2 - 0.15 * rank);
+					out.push_back(f);
+				}
 			}
 
 			// What held you back
@@ -261,29 +346,11 @@ namespace Ui
 		}
 
 		// "N of M rounds": the same fix in earlier rounds, each against that round's compared player
+		// In how many of your rounds tonight a fix came up (from the night's round-by-round work, kept per round)
+		std::pair<int, int> FixRounds(const Ctx& c, const std::string& aKey); // after NightOf
 		std::string Recurring(const Ctx& c, const std::string& aKey)
 		{
-			static std::string cacheKey;
-			static std::map<int, std::set<std::string>> perRound;
-			static int rounds = 0;
-			const auto& fights = *c.Fights;
-			std::string key = std::to_string(fights.size()) + "|" + c.You.Account + "|" + c.You.Spec + "|" + S().VsAccount;
-			if (key != cacheKey)
-			{
-				cacheKey = key;
-				perRound.clear();
-				rounds = 0;
-				for (int i = 0; i < static_cast<int>(fights.size()); i++)
-				{
-					const Fight& f = *fights[i];
-					if (f.Pov < 0 || f.Players[f.Pov].Account != c.You.Account || f.Players[f.Pov].Spec != c.You.Spec) { continue; }
-					rounds++;
-					Ctx ci = BuildCtx(fights, i, false);
-					for (const Fix& x : FindFixes(ci)) { perRound[i].insert(x.Key); }
-				}
-			}
-			int n = 0;
-			for (auto& [i, keys] : perRound) { n += keys.count(aKey) ? 1 : 0; }
+			auto [n, rounds] = FixRounds(c, aKey);
 			return n >= 2 ? "in " + std::to_string(n) + " of " + std::to_string(rounds) + " rounds tonight" : std::string();
 		}
 
@@ -357,12 +424,21 @@ namespace Ui
 		struct MeasureRow
 		{
 			std::string Name, YouText, RefText, Gap;
+			std::string Shown, Sub; // the name as shown (no unit for one round's totals); Sub: the rate beside a total
+			std::string Tip;        // what the number counts, when it can differ from another addon's
 			double You = 0, Best = 0, Median = 0;
 			int Rank = 1, Of = 1;       // your place among your peers on it
 			int Metric = kNoMetric;     // opens by skill
 			bool Unknown = false;
 			double Order = 0;
+			bool Scales = false;        // grows with the round's length (totals), unlike a share or an uptime
+			double Usual = -1;          // your median tonight, over this round's length when it scales; -1 unknown
+			std::string UsualText;
+			std::function<std::string(double)> Fmt;
+			bool Lower = false;         // less is better (stability left over)
+			bool Leads() const { return Lower ? You <= Best : You >= Best; }
 		};
+		void AddUsual(const Ctx& c, std::vector<MeasureRow>& aRows); // after NightOf
 
 		double Median(std::vector<double> v)
 		{
@@ -374,12 +450,13 @@ namespace Ui
 		// Your output measures against your spec, biggest gap first; only what your role or your peers produced
 		std::vector<MeasureRow> OutputRows(const Ctx& c)
 		{
-			struct Def { std::string Name; int Metric; std::function<double(const Player&)> Value; std::function<std::string(double)> Fmt; double Floor; bool NeedsHeal; };
+			// Value: below 0 when not known for that player (left out of the comparison)
+			struct Def { std::string Name; int Metric; std::function<double(const Player&)> Value; std::function<std::string(double)> Fmt; double Floor; bool NeedsHeal; bool Lower = false; };
 			auto rate = [](int aMetric) { return [aMetric](const Player& p) { const Metric& m = Metrics()[aMetric]; return Rate(m, p, m.Total(p)); }; };
 			std::vector<Def> defs = {
 				{"Healing /s", kMetricHeal, rate(kMetricHeal), Num, 50, true},
 				{"Barrier /s", kMetricBarrier, rate(kMetricBarrier), Num, 50, true},
-				{"Healing on downed allies /s", kNoMetric, [](const Player& p) { return PerS(p, double(p.HealDowned)); }, Num, 50, true},
+				{"Healing on downed allies /s", kNoMetric, [](const Player& p) { return Totals(p) ? double(p.HealDowned) : PerS(p, double(p.HealDowned)); }, Num, 50, true},
 				{"Damage to players /s", kMetricDamage, rate(kMetricDamage), Num, 100, false},
 				{"Cleanses /min", kMetricCleanses, rate(kMetricCleanses), Num, 1, false},
 				{"Strips /min", kMetricStrips, rate(kMetricStrips), Num, 1, false},
@@ -390,7 +467,11 @@ namespace Ui
 				defs.push_back({"Damage in our spikes", kMetricDamage, [&c](const Player& p) { return std::max(0.0, SpikeShare(Lookup(c, p).first, Lookup(c, p).second, p.Spec)); },
 					[](double v) { return std::to_string(int(v + 0.5)) + "%"; }, 1, false});
 			}
-			defs.push_back({kJobCc, kNoMetric, [](const Player& p) { return PerS(p, p.CcDealt) * 60; }, Num, 0.5, false});
+			defs.push_back({kJobCc, kNoMetric, [](const Player& p) { return CountRate(p, p.CcDealt); }, Num, 0.5, false});
+			if (JobRank(c.Jobs, kJobDowns) >= 0)
+			{
+				defs.push_back({kJobDowns, kNoMetric, [](const Player& p) { return Totals(p) ? double(p.DownContribution) : PerS(p, double(p.DownContribution)); }, Num, 100, false});
+			}
 			if (JobRank(c.Jobs, kJobRevives) >= 0)
 			{
 				defs.push_back({kJobRevives, kNoMetric, [&c](const Player& p)
@@ -402,7 +483,7 @@ namespace Ui
 			}
 			if (JobRank(c.Jobs, kJobNegated) >= 0)
 			{
-				defs.push_back({kJobNegated, kNoMetric, [](const Player& p) { return PerS(p, p.Evades + p.Blocks + p.Invulns) * 60; }, Num, 1, false});
+				defs.push_back({kJobNegated, kNoMetric, [](const Player& p) { return CountRate(p, p.Evades + p.Blocks + p.Invulns); }, Num, 1, false});
 			}
 			if (JobRank(c.Jobs, kJobDistortion) >= 0)
 			{
@@ -413,16 +494,39 @@ namespace Ui
 					},
 					[](double v) { return std::to_string(int(v + 0.5)) + "%"; }, 1, false});
 			}
+			for (const std::string& job : c.Jobs)
+			{
+				auto [skill, window] = KeySkillOf(job);
+				if (window < 0) { continue; }
+				std::string sk = skill;
+				int w = window;
+				defs.push_back({job, kNoMetric, [&c, sk, w](const Player& p) { auto [in, all] = KeyCasts(c, p, sk, w); return all ? 100.0 * in / all : 0.0; },
+					[](double v) { return std::to_string(int(v + 0.5)) + "%"; }, 1, false});
+			}
 			if (c.You.StabEligible >= 3)
 			{
 				defs.push_back({"CC covered by your stability", kMetricGroupBoon + Analysis::kStability,
 					[](const Player& p) { return p.StabEligible >= 3 ? 100.0 * p.StabCovered / p.StabEligible : 0.0; },
 					[](double v) { return std::to_string(int(v + 0.5)) + "%"; }, 1, false});
 			}
+			// Your stability as a whole, not one skill's casts (the user, 2026-10-01: a Troubadour has many stability skills):
+			// on your subgroup when their spikes peaked, and TopStats' redundancy (lower is better)
+			{
+				auto pct = [](double v) { return std::to_string(int(v + 0.5)) + "%"; };
+				if (c.You.StabSpikes >= 2)
+				{
+					defs.push_back({kJobStabAtSpikes, kNoMetric, [](const Player& p) { return p.StabSpikes >= 2 ? 100.0 * p.StabSpikeShare / p.StabSpikes : -1.0; }, pct, 1, false});
+				}
+				if (c.You.StabAllyNominalMs >= 10000)
+				{
+					defs.push_back({kJobStabRedundancy, kNoMetric, [](const Player& p) { return p.StabAllyNominalMs >= 10000 ? 100.0 * double(p.StabRedundantMs) / double(p.StabAllyNominalMs) : -1.0; },
+						pct, 1, false, true});
+				}
+			}
 			for (int b = 0; b < Analysis::kBoons; b++)
 			{
 				bool stacks = c.F->Intensity[b];
-				defs.push_back({std::string(Analysis::kBoonNames[b]) + " on subgroup", kMetricGroupBoon + b,
+				defs.push_back({std::string(Analysis::kBoonNames[b]) + " to subgroup", kMetricGroupBoon + b,
 					[&c, b](const Player& p) { return GroupGenOver(Lookup(c, p).first, Lookup(c, p).second, p.Spec, b); },
 					[stacks](double v) { return stacks ? Num(v) : std::to_string(int(v + 0.5)) + "%"; }, stacks ? 0.3 : 5.0, false});
 			}
@@ -430,25 +534,70 @@ namespace Ui
 			for (const Def& d : defs)
 			{
 				MeasureRow r;
-				r.Name = d.Name; r.Metric = d.Metric;
-				r.Unknown = d.NeedsHeal && !c.You.HealKnown;
+				r.Name = d.Name; r.Metric = d.Metric; r.Shown = ShownName(d.Name, c.OneRound);
+				// one round: amounts are totals, with the per-second rate beside them (ArcDPS and Healing Stats show both)
+				bool amount = d.Metric == kMetricHeal || d.Metric == kMetricBarrier || d.Metric == kMetricDamage || d.Metric == kMetricDamageAll || d.Name.rfind("Healing on downed", 0) == 0;
+				if (amount && c.OneRound && !(d.NeedsHeal && !c.You.HealKnown)) { r.Sub = Num(PerS(c.You, d.Value(c.You))) + " /s"; }
+				r.Scales = amount || d.Metric == kMetricCleanses || d.Metric == kMetricStrips || d.Name == kJobCc || d.Name == kJobNegated || d.Name == kJobDowns;
+				if (auto [skill, window] = KeySkillOf(d.Name); window >= 0)
+				{
+					auto [in, all] = KeyCasts(c, c.You, skill, window);
+					r.Tip = "Of your " + skill + " casts, how many went off " + WindowLabel(window) +
+						(window == Analysis::T_IntoOurs ? " (within 2 s of its peak): the main call." : ": stability up before their CC lands.") +
+						"\nYou: " + (all ? std::to_string(in) + " of " + std::to_string(all) : std::string("not cast")) + ".";
+				}
+				if (d.Name == kJobDowns)
+				{
+					if (!c.OneRound) { r.Shown += " /s"; }
+					r.Tip = "Estimated, as Elite Insights: your damage to enemies from 90% health to a down that died.";
+				}
+				if (d.Metric == kMetricHeal && c.You.HealKnown)
+				{
+					r.Tip = "Healing on squad members, as TopStats counts it. Healing Stats also counts healing on downed allies: " +
+						Num(double(c.You.HealDowned)) + " more for you" + (c.OneRound ? " this round." : " tonight.");
+				}
+				if (d.Name == kJobStabAtSpikes)
+				{
+					r.Tip = "In each enemy spike, how much of your subgroup had a stack of your stability in the 3 s up to its peak, on average.\n"
+						"60%: with 5 others in your subgroup, 3 had yours on. You: " + std::to_string(c.You.StabSpikes) + " enemy spikes.";
+				}
+				if (d.Name == kJobStabRedundancy)
+				{
+					r.Tip = "TopStats' Redundancy: the share of your stability on allies that landed on top of another provider's still running.\n"
+						"Lower is better. It can be a deliberate pre-stack, so it is a hint, not proof.";
+				}
+				r.Lower = d.Lower;
+				r.Unknown = (d.NeedsHeal && !c.You.HealKnown) || d.Value(c.You) < 0;
 				r.You = r.Unknown ? 0 : d.Value(c.You);
 				std::vector<double> all{r.You};
+				bool first = true;
 				for (const Player& p : c.Peers)
 				{
 					if (d.NeedsHeal && !p.HealKnown) { continue; }
 					double v = d.Value(p);
-					r.Best = std::max(r.Best, v);
+					if (v < 0) { continue; }
+					r.Best = first ? v : d.Lower ? std::min(r.Best, v) : std::max(r.Best, v);
+					first = false;
 					all.push_back(v);
 					r.Of++;
-					r.Rank += v > r.You;
+					r.Rank += d.Lower ? v < r.You : v > r.You;
 				}
+				if (first && d.Lower) { r.Best = r.You; }
 				r.Median = Median(all);
-				if (std::max(r.You, r.Best) < d.Floor) { continue; }
+				if (!d.Lower && std::max(r.You, r.Best) < d.Floor) { continue; }
 				r.YouText = r.Unknown ? "unknown" : d.Fmt(r.You);
-				r.RefText = d.Fmt(r.Best);
+				// where you lead, the runner-up (it said "best 0" when nobody else had any)
+				const bool share = !d.Fmt(0).empty() && d.Fmt(0).back() == '%';
+				r.RefText = r.Of <= 1 ? "nobody else on your spec" : r.Leads() && !r.Unknown ? (r.Best > 0 || d.Lower ? "next " + d.Fmt(r.Best) : share ? "others 0%" : "nobody else had any")
+					: "best " + d.Fmt(r.Best);
+				r.Fmt = d.Fmt; // AddUsual formats your usual like the value
 				if (r.Unknown) { r.Gap = "no Healing Stats data"; r.Order = -1; }
-				else if (r.You >= r.Best) { r.Gap = "the best"; r.Order = -0.5; }
+				else if (r.Leads()) { r.Gap = "the best"; r.Order = -0.5; }
+				else if (d.Lower)
+				{
+					r.Order = (r.You - r.Best) / 100.0;
+					r.Gap = std::to_string(int(r.You - r.Best + 0.5)) + " points above best";
+				}
 				else
 				{
 					double rel = (r.Best - r.You) / r.Best;
@@ -468,7 +617,7 @@ namespace Ui
 				if (rank(a) != rank(b)) { return rank(a) < rank(b); }
 				return a.Order > b.Order;
 			});
-			if (rows.size() > 8) { rows.resize(8); }
+			if (rows.size() > std::max<size_t>(8, c.Jobs.size() + 3)) { rows.resize(std::max<size_t>(8, c.Jobs.size() + 3)); } // every job, then the next few
 			return rows;
 		}
 
@@ -482,13 +631,13 @@ namespace Ui
 				{"Time downed", [](const Player& p) { return p.DownedMs / 1000.0; }, secs},
 				{"Time dead", [](const Player& p) { return DeadMs(p) / 1000.0; }, secs},
 				{"Casts cut short", [](const Player& p) { return double(CastsCutShort(p)); }, Num},
-				{"Damage taken /s", [](const Player& p) { return PerS(p, double(p.DamageTaken)); }, Num},
+				{c.OneRound ? "Damage taken" : "Damage taken /s", [](const Player& p) { return Totals(p) ? double(p.DamageTaken) : PerS(p, double(p.DamageTaken)); }, Num},
 			};
 			std::vector<MeasureRow> rows;
 			for (const Def& d : defs)
 			{
 				MeasureRow r;
-				r.Name = d.Name;
+				r.Name = d.Name; r.Shown = d.Name;
 				r.You = d.Value(c.You);
 				std::vector<double> all{r.You};
 				for (const Player& p : c.Peers) { all.push_back(d.Value(p)); }
@@ -522,7 +671,7 @@ namespace Ui
 			ImGui::PopID();
 			ImU32 ink = ImGui::GetColorU32(ImGuiCol_Text), muted = ImGui::GetColorU32(kMuted);
 			float ty = p.y + 3;
-			dl->AddText(ImVec2(p.x + 4, ty), ink, r.Name.c_str());
+			dl->AddText(ImVec2(p.x + 4, ty), ink, r.Shown.c_str());
 			const float bx = p.x + 220, bw = 280, bh = lh * 0.45f;
 			double mx = std::max({r.You, r.Best, r.Median});
 			if (mx <= 0) { mx = 1; }
@@ -569,6 +718,14 @@ namespace Ui
 
 		std::string RoleText(const Ctx& c, double v) { return c.MyRole == R_Stab ? std::to_string(int(v + 0.5)) + "%" : Num(v); }
 
+		// The same as a rate (per second; strips per minute; stability as it is): comparable across rounds of any length
+		double RoleRate(const Ctx& c, const Player& p)
+		{
+			if (c.MyRole == R_Stab) { return RoleValue(c, p); }
+			const Metric& m = Metrics()[c.RoleMetric];
+			return m.What == K_Count ? PerS(p, m.Total(p)) * 60 : PerS(p, m.Total(p));
+		}
+
 		const char* RoleLabel(const Ctx& c)
 		{
 			return c.MyRole == R_Heal ? "Healing /s" : c.MyRole == R_Stab ? "CC on your subgroup your stability covered" : c.MyRole == R_Strip ? "Strips /min" : "Damage to players /s";
@@ -610,7 +767,7 @@ namespace Ui
 				if (ImGui::Selectable(("The best " + c.PeerLabel()).c_str(), s.VsAccount.empty())) { s.VsAccount.clear(); }
 				for (const Player& p : c.Peers)
 				{
-					std::string rate = Known(m, p) ? Num(Rate(m, p, m.Total(p))) + " " + RateUnit(m) : std::string("unknown");
+					std::string rate = Known(m, p) ? WithUnit(Num(Rate(m, p, m.Total(p))), RateUnit(m, p)) : std::string("unknown");
 					std::string item = p.Name + (c.SameSpec ? "" : " (" + p.Spec + ")") + "   " + m.Name + " " + rate + "##" + p.Account;
 					if (ImGui::Selectable(item.c_str(), &p == c.Vs && !s.VsAccount.empty())) { s.VsAccount = p.Account; }
 				}
@@ -620,27 +777,43 @@ namespace Ui
 
 		// A card per job, three to a row: number and name, your value, the best, your rank, a bar with the best's tick
 		// Returns the measure clicked (its metric), or kNoMetric
-		int JobCards(const std::vector<MeasureRow>& aRows, int aCount)
+		// Jobs where you had none this round fold into one line (aEmpty) instead of a card each ("100% below best" four
+		// times on a short round); a card shows your usual tonight on a fourth line and as a tick when it's known
+		int JobCards(const std::vector<MeasureRow>& aRows, int aCount, std::vector<const MeasureRow*>* aEmpty)
 		{
 			int clicked = kNoMetric;
 			float avail = ImGui::GetContentRegionAvail().x, lh = ImGui::GetTextLineHeight();
-			const float gap = 6, w = (avail - 2 * gap) / 3, h = lh * 4.1f;
+			bool usual = false;
+			for (int i = 0; i < aCount; i++) { usual |= aRows[i].Usual >= 0; }
+			const float gap = 6, w = (avail - 2 * gap) / 3, h = lh * (usual ? 5.1f : 4.1f);
+			int shown = 0;
 			for (int i = 0; i < aCount; i++)
 			{
 				const MeasureRow& r = aRows[i];
-				if (i % 3) { ImGui::SameLine(0, gap); }
+				if (aEmpty && !r.Unknown && !r.Lower && r.You <= 0 && i > 0) { aEmpty->push_back(&r); continue; } // your role's number always shows
+				if (shown++ % 3) { ImGui::SameLine(0, gap); }
 				ImGui::PushID(i);
 				ImVec2 p = ImGui::GetCursorScreenPos();
 				bool clickable = r.Metric != kNoMetric && !r.Unknown;
 				if (ImGui::InvisibleButton("card", ImVec2(w, h)) && clickable) { clicked = r.Metric; }
 				bool hovered = ImGui::IsItemHovered();
-				if (hovered && clickable) { ImGui::SetTooltip("By skill"); }
+				if (hovered && (clickable || !r.Tip.empty() || r.Usual >= 0))
+				{
+					std::string tip = clickable ? "By skill" : "";
+					if (!r.Tip.empty()) { tip += (tip.empty() ? "" : "\n") + r.Tip; }
+					if (r.Usual >= 0)
+					{
+						tip += std::string(tip.empty() ? "" : "\n") + "Your usual: your median tonight on this spec" +
+							(r.Scales ? ", as a rate over a round as long as this one (you alive)." : ".");
+					}
+					ImGui::SetTooltip("%s", tip.c_str());
+				}
 				ImGui::PopID();
 				ImDrawList* dl = ImGui::GetWindowDrawList();
 				ImU32 ink = ImGui::GetColorU32(ImGuiCol_Text), muted = ImGui::GetColorU32(kMuted);
 				dl->AddRect(p, ImVec2(p.x + w, p.y + h), hovered && clickable ? ImGui::GetColorU32(ImGuiCol_ButtonHovered) : IM_COL32(0x3b, 0x42, 0x50, 255));
 				float x0 = p.x + 8, y0 = p.y + 5;
-				std::string title = std::to_string(i + 1) + ". " + r.Name;
+				std::string title = std::to_string(shown) + ". " + r.Shown + (r.Sub.empty() ? "" : "   " + r.Sub);
 				dl->PushClipRect(p, ImVec2(p.x + w - 70, p.y + h), true);
 				dl->AddText(ImVec2(x0, y0), muted, title.c_str());
 				dl->PopClipRect();
@@ -649,17 +822,34 @@ namespace Ui
 				float vy = y0 + lh + 2;
 				dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 1.5f, ImVec2(x0, vy), ink, r.YouText.c_str());
 				float vw = ImGui::CalcTextSize(r.YouText.c_str()).x * 1.5f;
-				std::string best = "best " + r.RefText;
-				dl->AddText(ImVec2(x0 + vw + 10, vy + lh * 0.4f), muted, best.c_str());
-				std::string gapText = r.Unknown ? std::string() : r.You >= r.Best ? "the best" : r.Gap;
-				dl->AddText(ImVec2(p.x + w - 8 - ImGui::CalcTextSize(gapText.c_str()).x, vy + lh * 0.4f), r.You >= r.Best ? kYou : ink, gapText.c_str());
-				// the bar: yours in blue over a track, the best as a light tick
+				std::string gapText = r.Unknown ? std::string() : r.Leads() ? "the best" : r.Gap;
+				float gapW = ImGui::CalcTextSize(gapText.c_str()).x;
+				dl->PushClipRect(ImVec2(x0 + vw + 10, vy), ImVec2(p.x + w - 14 - gapW, vy + lh * 2), true);
+				dl->AddText(ImVec2(x0 + vw + 10, vy + lh * 0.4f), muted, r.RefText.c_str());
+				dl->PopClipRect();
+				dl->AddText(ImVec2(p.x + w - 8 - gapW, vy + lh * 0.4f), r.Leads() ? kYou : ink, gapText.c_str());
+				if (r.Usual >= 0)
+				{
+					std::string u = "your usual " + r.UsualText;
+					dl->PushClipRect(p, ImVec2(p.x + w - 4, p.y + h), true);
+					dl->AddText(ImVec2(x0, vy + lh * 1.75f), muted, u.c_str());
+					dl->PopClipRect();
+				}
+				// the bar: yours in blue over a track, the best as a light tick, your usual as a short dark one under it
 				float by = p.y + h - 10, bw = w - 16;
-				double mx = std::max({r.You, r.Best, 1e-9});
+				double mx = std::max({r.You, r.Best, r.Usual, 1e-9});
 				dl->AddRectFilled(ImVec2(x0, by), ImVec2(x0 + bw, by + 5), kTrack);
 				if (!r.Unknown) { dl->AddRectFilled(ImVec2(x0, by), ImVec2(x0 + static_cast<float>(bw * r.You / mx), by + 5), kYou); }
-				float tx = x0 + static_cast<float>(bw * r.Best / mx) - 1;
-				dl->AddRectFilled(ImVec2(tx, by - 3), ImVec2(tx + 2, by + 8), kPeerTick);
+				if (r.Of > 1)
+				{
+					float tx = x0 + static_cast<float>(bw * r.Best / mx) - 1;
+					dl->AddRectFilled(ImVec2(tx, by - 3), ImVec2(tx + 2, by + 8), kPeerTick);
+				}
+				if (r.Usual >= 0)
+				{
+					float ux = x0 + static_cast<float>(bw * r.Usual / mx) - 1;
+					dl->AddRectFilled(ImVec2(ux, by + 2), ImVec2(ux + 2, by + 9), ink);
+				}
 			}
 			return clicked;
 		}
@@ -670,7 +860,7 @@ namespace Ui
 			State& s = S();
 			if (s.Measure == kNoMetric) { return; }
 			const Metric& m = Metrics()[s.Measure];
-			std::string measure = m.Name + (m.What == K_Boon ? "" : std::string(" ") + RateUnit(m));
+			std::string measure = m.What == K_Boon ? m.Name : WithUnit(m.Name, RateUnit(m, c.You));
 			bool atSkill = s.Skill != kNoSkill;
 			std::string back = "< Back to " + (atSkill ? measure : std::string("You"));
 			if (ImGui::Button(back.c_str())) { if (atSkill) { s.Skill = kNoSkill; } else { s.Measure = kNoMetric; } }
@@ -702,6 +892,7 @@ namespace Ui
 		if (s.Measure != kNoMetric) { SkillTable(c, s.Measure, true); return; }
 
 		std::vector<MeasureRow> rows = OutputRows(c);
+		if (c.OneRound) { AddUsual(c, rows); }
 		std::vector<Fix> fixes = FindFixes(c);
 		// Your role's measure and your spec's jobs as cards; the rest on request
 		int main = 0; // rows are sorted: your role's measure first, then your spec's jobs, then the rest
@@ -712,9 +903,77 @@ namespace Ui
 		{
 			ImGui::TextColored(kMuted, "Healing is unknown for %s: it needs the Healing Stats addon running on that side.", !c.You.HealKnown ? "you" : c.Vs->Name.c_str());
 		}
-		int count = s.AllMeasures ? static_cast<int>(rows.size()) : main;
-		int open = JobCards(rows, count);
+		if (c.OneRound && c.F->DurationMs < 30000)
+		{
+			ImGui::TextColored(kMuted, "A short round (%s): its totals are small and one skill decides a rank; your usual is scaled to its length.",
+				Duration(c.F->DurationMs).c_str());
+		}
+		// Three cards: your role's number and your two biggest gaps among your jobs; your other jobs as rows (the user's
+		// v7 pick: nine cards were too many)
+		std::vector<MeasureRow> cards;
+		std::vector<const MeasureRow*> others, empty;
+		if (!rows.empty()) { cards.push_back(rows[0]); }
+		{
+			std::vector<const MeasureRow*> jobs;
+			for (int i = 1; i < main; i++) { jobs.push_back(&rows[i]); }
+			std::vector<const MeasureRow*> byGap = jobs;
+			std::stable_sort(byGap.begin(), byGap.end(), [](const MeasureRow* a, const MeasureRow* b) { return a->Order > b->Order; });
+			std::set<const MeasureRow*> picked;
+			for (const MeasureRow* r : byGap)
+			{
+				if (picked.size() >= 2) { break; }
+				if (!r->Unknown && (r->You > 0 || r->Lower) && r->Order > 0) { picked.insert(r); }
+			}
+			for (const MeasureRow* r : jobs) { if (picked.count(r)) { cards.push_back(*r); } }
+			for (const MeasureRow* r : jobs)
+			{
+				if (picked.count(r)) { continue; }
+				(!r->Unknown && !r->Lower && r->You <= 0 ? empty : others).push_back(r);
+			}
+			if (s.AllMeasures) { for (size_t i = main; i < rows.size(); i++) { others.push_back(&rows[i]); } }
+		}
+		int open = JobCards(cards, static_cast<int>(cards.size()), nullptr);
 		if (open != kNoMetric) { s.Measure = open; s.Skill = kNoSkill; }
+		const ImVec4 kYouV = ImGui::ColorConvertU32ToFloat4(kYou);
+		ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(10, ImGui::GetStyle().CellPadding.y)); // room between the packed columns
+		bool otherJobs = !others.empty() && ImGui::BeginTable("otherjobs", 5, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg);
+		ImGui::PopStyleVar();
+		if (otherJobs)
+		{
+			// each column as wide as its widest entry, so headings sit by their numbers (the user, 2026-10-01: spread out)
+			ImGui::TableSetupColumn("Your other jobs", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("You", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("Best", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("Your usual", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("Gap", ImGuiTableColumnFlags_WidthStretch);
+			Headers({{"Your other jobs", nullptr}, {"You", nullptr}, {"Best", "Best on your spec, or next when you lead"}, {"Your usual", "Your median tonight"}, {"Gap", nullptr}});
+			for (const MeasureRow* r : others)
+			{
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::PushID(r->Name.c_str());
+				bool clickable = r->Metric != kNoMetric && !r->Unknown;
+				if (ImGui::Selectable((r->Shown + (r->Sub.empty() ? "" : "   " + r->Sub)).c_str(), false, ImGuiSelectableFlags_SpanAllColumns) && clickable)
+				{
+					s.Measure = r->Metric; s.Skill = kNoSkill;
+				}
+				if (ImGui::IsItemHovered() && (clickable || !r->Tip.empty())) { ImGui::SetTooltip("%s", (std::string(clickable ? "By skill" : "") + (r->Tip.empty() ? "" : (clickable ? "\n" : "") + r->Tip)).c_str()); }
+				ImGui::PopID();
+				NumCell(r->YouText);
+				NumCell(r->RefText, &kMuted);
+				NumCell(r->Usual >= 0 ? r->UsualText : std::string("-"), &kMuted);
+				Cell(r->Unknown ? std::string() : r->Leads() ? "the best" : r->Gap, r->Leads() && !r->Unknown ? &kYouV : nullptr);
+			}
+			ImGui::EndTable();
+		}
+		if (!empty.empty())
+		{
+			std::string list;
+			for (const MeasureRow* r : empty) { list += (list.empty() ? "" : ", ") + Lower(r->Shown) + " (" + r->RefText + ")"; }
+			ImGui::PushTextWrapPos(0.0f);
+			ImGui::TextColored(kMuted, "None from you %s: %s", c.OneRound ? "this round" : "tonight", list.c_str());
+			ImGui::PopTextWrapPos();
+		}
 		if (static_cast<int>(rows.size()) > main)
 		{
 			std::string more = s.AllMeasures ? "Show only your jobs" : "Show " + std::to_string(rows.size() - main) + " more measures";
@@ -722,7 +981,7 @@ namespace Ui
 			if (!s.AllMeasures)
 			{
 				std::string names;
-				for (size_t i = main; i < rows.size(); i++) { names += (names.empty() ? "" : ", ") + Lower(rows[i].Name); }
+				for (size_t i = main; i < rows.size(); i++) { names += (names.empty() ? "" : ", ") + Lower(rows[i].Shown); }
 				ImGui::SameLine();
 				ImGui::PushTextWrapPos(0.0f);
 				ImGui::TextColored(kMuted, "%s: not %s jobs, so they don't make fixes", names.c_str(), c.You.Spec.c_str());
@@ -807,6 +1066,9 @@ namespace Ui
 			bool Known = true;
 			int Result = 0;          // 1 won, -1 lost, 0 even (downs each side)
 			std::vector<Fix> Fixes;
+			std::map<std::string, double> Measures; // your measures this round (You tab), for your usual
+			double FightingMs = 0;                  // your time alive while either side was fighting
+			double Total = 0;                       // your role's number as the round's total
 		};
 		struct Night
 		{
@@ -819,13 +1081,32 @@ namespace Ui
 			static std::string cacheKey;
 			static Night night;
 			const auto& fights = *c.Fights;
-			std::string key = std::to_string(fights.size()) + "|" + (fights.empty() ? "" : fights.back()->Stamp) + "|" + c.You.Account + "|" + c.You.Spec + "|" + S().VsAccount;
+			std::string key = std::to_string(DataVersion()) + "|" + c.You.Account + "|" + c.You.Spec + "|" + S().VsAccount;
 			if (key == cacheKey) { return night; }
 			cacheKey = key;
 			night = Night{};
+			// Each round's entry is kept while its round is (the same analysed round: the entry holds it, so its address
+			// can't be reused) and your jobs are the same: a new round costs one round's work, not the night's (43 rounds
+			// on 14 Sept: 55 ms on the frame a round arrived, the night rebuilt every time)
+			struct Kept { FightPtr F; NightRound R; bool Used = false; };
+			static std::map<std::string, Kept> kept;
+			std::string jobs;
+			for (const std::string& j : JobsFor(fights, c.You.Account, c.You.Spec)) { jobs += j + ";"; }
+			const std::string who = c.You.Account + "|" + c.You.Spec + "|" + S().VsAccount + "|" + std::to_string(c.MyRole) + "|" + jobs;
+			for (auto& [k, e] : kept) { e.Used = false; }
 			for (int i = 0; i < static_cast<int>(fights.size()); i++)
 			{
 				const Fight& f = *fights[i];
+				auto it = kept.find(f.Stamp + "|" + who);
+				if (it != kept.end() && it->second.F == fights[i])
+				{
+					it->second.Used = true;
+					NightRound r = it->second.R;
+					r.Index = i;
+					night.Played += r.Mine;
+					night.Rounds.push_back(std::move(r));
+					continue;
+				}
 				NightRound r;
 				r.Index = i;
 				r.Short = f.DurationMs < 30000;
@@ -837,14 +1118,59 @@ namespace Ui
 					Ctx ci = BuildCtx(fights, i, false, me->Account);
 					r.Mine = true;
 					r.Known = c.MyRole != R_Heal || me->HealKnown;
-					r.Value = RoleValue(ci, ci.You);
-					for (const Player& p : ci.Peers) { if (c.MyRole != R_Heal || p.HealKnown) { r.Best = std::max(r.Best, RoleValue(ci, p)); } }
+					r.Value = RoleRate(ci, ci.You);
+					for (const Player& p : ci.Peers) { if (c.MyRole != R_Heal || p.HealKnown) { r.Best = std::max(r.Best, RoleRate(ci, p)); } }
 					r.Fixes = FindFixes(ci);
+					r.FightingMs = me->ActiveMs * FightingShare(f);
+					r.Total = RoleValue(ci, ci.You);
+					for (const MeasureRow& m : OutputRows(ci)) { if (!m.Unknown) { r.Measures[m.Name] = m.You; } }
 					night.Played++;
 				}
+				kept[f.Stamp + "|" + who] = Kept{fights[i], r, true};
 				night.Rounds.push_back(r);
 			}
+			// drop what the night no longer has (rounds re-read or replaced, another player looked at)
+			for (auto it = kept.begin(); it != kept.end();) { it = it->second.Used ? std::next(it) : kept.erase(it); }
 			return night;
+		}
+	}
+
+	namespace
+	{
+		std::pair<int, int> FixRounds(const Ctx& c, const std::string& aKey)
+		{
+			const Night& n = NightOf(c);
+			int with = 0;
+			for (const NightRound& r : n.Rounds)
+			{
+				if (!r.Mine) { continue; }
+				with += std::any_of(r.Fixes.begin(), r.Fixes.end(), [&](const Fix& f) { return f.Key == aKey; });
+			}
+			return {with, n.Played};
+		}
+
+		// Your usual on each measure: the median of your rounds tonight on this spec (30 s+, two or more); a total is
+		// taken as a rate over the time you were alive while the fight was on (a 6-minute round with a long chase would
+		// read as a slow pace otherwise) and put over this round's, so a short round is judged against a short round
+		void AddUsual(const Ctx& c, std::vector<MeasureRow>& aRows)
+		{
+			const Night& n = NightOf(c);
+			const double fightingMs = c.You.ActiveMs * FightingShare(*c.F);
+			for (MeasureRow& row : aRows)
+			{
+				std::vector<double> v;
+				for (const NightRound& r : n.Rounds)
+				{
+					if (!r.Mine || r.Short || r.FightingMs <= 0) { continue; }
+					auto it = r.Measures.find(row.Name);
+					if (it == r.Measures.end()) { continue; }
+					v.push_back(row.Scales ? it->second / r.FightingMs * fightingMs : it->second);
+				}
+				if (v.size() < 2 || !row.Fmt) { continue; }
+				std::sort(v.begin(), v.end());
+				row.Usual = v[v.size() / 2];
+				row.UsualText = row.Fmt(row.Usual);
+			}
 		}
 	}
 
@@ -970,7 +1296,7 @@ namespace Ui
 			else { ImGui::Text("You %s, best %s %s", RoleText(c, r.Value).c_str(), c.PeerLabel().c_str(), r.Best > 0 ? RoleText(c, r.Best).c_str() : "-"); }
 			ImGui::TextColored(kMuted, "Click to open it");
 			ImGui::EndTooltip();
-			if (ImGui::IsItemClicked()) { S().Selected = i == count - 1 ? -1 : i; S().SwitchTo = T_You; S().AllRounds = false; }
+			if (ImGui::IsItemClicked()) { S().Selected = i == count - 1 ? -1 : i; S().SwitchTo = T_You; S().YouTonight = false; }
 		}
 		ImGui::TextColored(kMuted, "Under each round: blue we downed more of theirs, orange they downed more of ours, grey even.");
 
@@ -1035,7 +1361,7 @@ namespace Ui
 					ImGui::TextColored(kMuted, "Latest, round %d: %s", q.Last + 1, q.Latest.c_str());
 					ImGui::TextColored(kMuted, "Click to open the round");
 					ImGui::EndTooltip();
-					if (clicked) { S().Selected = ri == count - 1 ? -1 : ri; S().SwitchTo = T_You; S().AllRounds = false; }
+					if (clicked) { S().Selected = ri == count - 1 ? -1 : ri; S().SwitchTo = T_You; S().YouTonight = false; }
 				}
 			}
 			ImGui::EndTable();
@@ -1069,9 +1395,7 @@ namespace Ui
 			for (int32_t d : f.SquadDownMs)
 			{
 				squadDowns++;
-				bool in = false;
-				for (int64_t t : f.TheirSpikesMs) { in |= d >= t - 1000 && d <= t + 4000; }
-				inSpikes += in;
+				inSpikes += SpikeOf(f.TheirSpikesMs, d) >= 0;
 			}
 			for (auto& [g, w] : f.GroupCcWindows) { windows += w; }
 			for (auto& [g, k] : f.GroupCcCovered) { covered += k; }
@@ -1082,33 +1406,52 @@ namespace Ui
 		ImGui::EndChild();
 	}
 
-	std::vector<std::string> SummaryLines(const Ctx& c)
+	NextRoundFacts NextRound(const Ctx& c)
 	{
-		std::vector<std::string> out;
-		if (!c.MeRaw) { out.push_back(NoYou(*c.F)); return out; }
-		bool known = c.MyRole != R_Heal || c.You.HealKnown;
-		double mine = RoleValue(c, c.You);
-		int rank = 1, of = 1;
+		NextRoundFacts n;
+		if (!c.MeRaw) { return n; }
+		n.Has = true;
+		n.Stab = c.MyRole == R_Stab;
+		n.Word = c.MyRole == R_Heal ? "healing" : n.Stab ? "CC on your subgroup covered" : c.MyRole == R_Strip ? "strips" : "damage to players";
+		n.Known = n.Stab ? c.You.StabEligible > 0 : c.MyRole != R_Heal || c.You.HealKnown;
+		n.You = RoleValue(c, c.You);
+		n.YouText = !n.Known ? "unknown" :
+			n.Stab ? std::to_string(c.You.StabCovered) + " of " + std::to_string(c.You.StabEligible) + " (" + RoleText(c, n.You) + ")" : Num(n.You);
+		// the best on your spec this round (players with the number known)
 		for (const Player& p : c.Peers)
 		{
-			if (c.MyRole == R_Heal && !p.HealKnown) { continue; }
-			of++;
-			rank += RoleValue(c, p) > mine;
+			if ((c.MyRole == R_Heal && !p.HealKnown) || (n.Stab && p.StabEligible == 0)) { continue; }
+			double v = RoleValue(c, p);
+			if (v > n.Best) { n.Best = v; n.BestWho = p.Name; }
 		}
-		static const char* kOrd[] = {"th", "st", "nd", "rd"};
-		std::string line = std::string(RoleLabel(c)) + ": " + (known ? RoleText(c, mine) : std::string("unknown"));
-		if (known && of > 1)
+		n.YouBest = n.Known && n.Best >= 0 && n.You >= n.Best;
+		if (n.Stab && !n.Known) { n.YouText = "0 CC"; n.Word = "no CC on your subgroup to cover"; }
+		if (n.Best >= 0) { n.BestText = RoleText(c, n.Best); }
+		// your usual: the median of your rounds tonight on this spec (30 s+, number known), from two rounds on; a total
+		// as a rate over your time alive while the fight was on, put over this round's (as the You tab's cards)
+		std::vector<double> values;
+		for (const NightRound& r : NightOf(c).Rounds)
 		{
-			line += ", " + std::to_string(rank) + kOrd[(rank % 10 < 4 && (rank / 10) % 10 != 1) ? rank % 10 : 0] + " of " + std::to_string(of) + " " + c.PeerLabel() + "s";
+			if (!r.Mine || r.Short || !r.Known || r.FightingMs <= 0) { continue; }
+			values.push_back(n.Stab ? r.Value : r.Total / r.FightingMs);
 		}
-		out.push_back(line);
+		if (values.size() >= 2)
+		{
+			std::sort(values.begin(), values.end());
+			n.Usual = values[values.size() / 2];
+			if (!n.Stab) { n.Usual *= c.You.ActiveMs * FightingShare(*c.F); }
+			n.UsualText = RoleText(c, n.Usual);
+		}
 		std::vector<Fix> fixes = FindFixes(c);
 		if (!fixes.empty())
 		{
 			const Fix& f = fixes[0];
-			out.push_back("Fix first: " + f.Subject + ", " + f.What + " (" + f.YouText + " vs " + f.ThemText + " " + f.Unit + ")");
+			n.HasFix = true;
+			n.FixSubject = f.Subject;
+			n.FixWhat = f.What;
+			n.FixNumbers = f.YouText + " vs " + f.ThemText + " " + f.Unit;
+			n.FixSkill = f.Kind == F_Skill ? f.Skill : kNoSkill;
 		}
-		else if (c.Vs) { out.push_back("Nothing stands out against " + c.Vs->Name + "."); }
-		return out;
+		return n;
 	}
 }

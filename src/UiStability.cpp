@@ -112,15 +112,16 @@ namespace Ui
 			item([](ImDrawList* d, ImVec2 p, float l) { d->AddRect(ImVec2(p.x, p.y + l * 0.2f), ImVec2(p.x + 12, p.y + l * 0.8f), kEnemy); }, "4 s before it");
 			item([](ImDrawList* d, ImVec2 p, float l) { d->AddRectFilled(ImVec2(p.x + 5, p.y + 1), ImVec2(p.x + 7, p.y + l - 1), kYou); }, "stability given (taller: reached more)");
 			item([](ImDrawList* d, ImVec2 p, float l) { d->AddRectFilled(ImVec2(p.x, p.y + l * 0.35f), ImVec2(p.x + 12, p.y + l * 0.65f), kYou); }, "stability on");
-			item([](ImDrawList* d, ImVec2 p, float l) { d->AddTriangleFilled(ImVec2(p.x + 1, p.y + 2), ImVec2(p.x + 11, p.y + 2), ImVec2(p.x + 6, p.y + l * 0.6f), kEnemy); }, "CC landed");
-			item([](ImDrawList* d, ImVec2 p, float l) { d->AddTriangleFilled(ImVec2(p.x + 1, p.y + l - 2), ImVec2(p.x + 11, p.y + l - 2), ImVec2(p.x + 6, p.y + l * 0.4f), kEnemy); }, "stripped");
+			// the same icons as Deaths: the CC type's icon, and the Stability icon outlined red when stripped or corrupted
+			item([](ImDrawList* d, ImVec2 p, float l) { CcIconAt(d, ImVec2(p.x, p.y + 1), l - 2, Analysis::CC_Stun); }, "CC landed (its type)");
+			item([](ImDrawList* d, ImVec2 p, float l) { BoonIconAt(d, ImVec2(p.x, p.y + 1), l - 2, Analysis::kStability, true); }, "stability stripped");
 			item([](ImDrawList* d, ImVec2 p, float l) { d->AddRectFilled(ImVec2(p.x + 5, p.y + l * 0.55f), ImVec2(p.x + 7, p.y + l - 1), kPeerTick); }, "stack used up");
 			item([](ImDrawList* d, ImVec2 p, float l) { d->AddRectFilled(ImVec2(p.x + 5, p.y + 1), ImVec2(p.x + 6, p.y + l - 1), kPeerTick); }, "ran out");
 			item([](ImDrawList* d, ImVec2 p, float l) { d->AddRectFilled(ImVec2(p.x, p.y + 2), ImVec2(p.x + 12, p.y + l - 2), kPeer); }, "downed or dead");
 			ImGui::NewLine();
 		}
 		const float labelW = 200, laneW = std::max(250.0f, ImGui::GetContentRegionAvail().x - labelW - 8);
-		const float h = ImGui::GetTextLineHeight() * 1.1f;
+		const float h = ImGui::GetTextLineHeight() * 1.35f;
 		double span = static_cast<double>(std::max<int64_t>(1, f.DurationMs));
 		auto x = [&](ImVec2 p, double ms) { return p.x + static_cast<float>(std::clamp(ms / span, 0.0, 1.0)) * laneW; };
 		// Spikes in lanes of their own (one colour each, no overlapping shades), then the givers' stability casts
@@ -156,6 +157,7 @@ namespace Ui
 			{
 				for (const auto& g : p.StabGives)
 				{
+					if (g.SelfOnly) { continue; } // the caster's own stability, not given to the subgroup
 					int n = 0;
 					for (int t : g.Targets) { n += std::find(inGroup.begin(), inGroup.end(), t) != inGroup.end(); }
 					if (n > 0) { ticks.push_back({g.Ms, &p, &g, n}); }
@@ -211,12 +213,9 @@ namespace Ui
 			for (const Analysis::Span& d : p->DownSpans) { dl->AddRectFilled(ImVec2(x(pos, d.From), pos.y + 1), ImVec2(x(pos, d.To), pos.y + h - 1), kPeer); }
 			// CC: a triangle on top; stability stripped: a triangle below; a stack used up: a short light tick; ran out: a
 			// light line where the bar ends with nothing taking it
-			for (int32_t t : p->CcMs) { float cx = x(pos, t); dl->AddTriangleFilled(ImVec2(cx - 4, pos.y), ImVec2(cx + 4, pos.y), ImVec2(cx, pos.y + h * 0.55f), kEnemy); }
 			for (auto& [t, kind] : p->StabLost)
 			{
-				float cx = x(pos, t);
-				if (kind == 0) { dl->AddTriangleFilled(ImVec2(cx - 4, pos.y + h), ImVec2(cx + 4, pos.y + h), ImVec2(cx, pos.y + h * 0.45f), kEnemy); }
-				else { dl->AddRectFilled(ImVec2(cx, pos.y + h * 0.6f), ImVec2(cx + 2, pos.y + h), kPeerTick); }
+				if (kind != 0) { float cx = x(pos, t); dl->AddRectFilled(ImVec2(cx, pos.y + h * 0.6f), ImVec2(cx + 2, pos.y + h), kPeerTick); }
 			}
 			for (auto& [a, b] : p->BoonOn[Analysis::kStability])
 			{
@@ -225,6 +224,29 @@ namespace Ui
 				for (auto& [t, kind] : p->StabLost) { taken |= std::abs(t - b) <= 150; }
 				for (const Analysis::Span& d : p->DownSpans) { taken |= std::abs(d.From - b) <= 150; }
 				if (!taken) { float cx = x(pos, b); dl->AddRectFilled(ImVec2(cx, pos.y), ImVec2(cx + 1, pos.y + h), kPeerTick); }
+			}
+			// icons last, on top; one that would overlap the one before it is left out (the hover gives the counts)
+			{
+				const float isz = h - 4;
+				float last = -1e9f;
+				std::vector<float> ccX;
+				for (const auto& cc : p->CcIn)
+				{
+					float cx = x(pos, cc.Ms) - isz * 0.5f;
+					if (cx - last < isz) { continue; }
+					CcIconAt(dl, ImVec2(cx, pos.y + 2), isz, cc.Kind);
+					ccX.push_back(cx);
+					last = cx;
+				}
+				last = -1e9f;
+				for (auto& [t, kind] : p->StabLost)
+				{
+					float cx = x(pos, t) - isz * 0.5f;
+					for (float at : ccX) { if (std::abs(cx - at) < isz + 2) { cx = at - isz - 3; } } // strips come before the CC: to its left
+					if (kind != 0 || cx - last < isz) { continue; }
+					BoonIconAt(dl, ImVec2(cx, pos.y + 2), isz, Analysis::kStability, true);
+					last = cx;
+				}
 			}
 			ImGui::Dummy(ImVec2(laneW, h));
 			if (ImGui::IsItemHovered())

@@ -39,6 +39,20 @@ namespace InstantCasts
 
 #include "CastRules.inc"
 
+		// Rules Elite Insights keeps as custom code (so not in CastRules.inc), written out by hand.
+		// Chronomancer shatters F1-F3: no cast event, no buff. Elite Insights tells which one from clone deaths (custom
+		// code); here any shatter is one use of "Shatter": the effect that plays around the Chronomancer when they shatter
+		// (it also plays for an Elementalist's Cleansing Fire, so Chronomancers only; once per 500 ms, as it plays for each
+		// clone too). 56% of Chronomancers' quickness had no source on 25 Sept, and 89% of what was left came with it.
+		// A Druid's Seed of Life blossoms a moment after the cast, and the blossom gives might: a use of its own at the
+		// blossom (a third of the Druids' might with no source on 25 Sept came at exactly that moment)
+		constexpr int32_t kShatter = -900, kSeedBlossom = -901;
+		const CastRule kHandRules[] = {
+			{CR_Effect, kShatter, 0, "5FA6527231BB8041AC783396142C6200", {0}, 500, 0ULL, 9223372036854775808ULL, false, 0, 0, "src=Chronomancer", -1, -1, 0, "", 0},
+			{CR_Effect, kSeedBlossom, 0, "666BCBD61F72E042B08EFE1C62555245", {0}, 50, 0ULL, 9223372036854775808ULL, false, 0, 0, "src=Druid", -1, -1, 0, "", 0},
+		};
+		const std::pair<int32_t, const char*> kHandNames[] = {{kShatter, "Shatter (F1, F2 or F3)"}, {kSeedBlossom, "Seed of Life (blossom)"}};
+
 		constexpr int64_t kServerDelay = 10;
 		constexpr uint8_t kHealSelfReported = 128;
 
@@ -261,8 +275,12 @@ namespace InstantCasts
 		bool hasEffects = !c.Effects.empty(), hasMissiles = !c.Missiles.empty();
 		std::unordered_map<uint64_t, std::vector<std::pair<int64_t, int32_t>>> out;
 		std::vector<std::pair<int64_t, uint64_t>> found;
-		for (const CastRule& r : kCastRules)
+		std::vector<const CastRule*> rules;
+		for (const CastRule& r : kCastRules) { rules.push_back(&r); }
+		for (const CastRule& r : kHandRules) { rules.push_back(&r); }
+		for (const CastRule* rp : rules)
 		{
+			const CastRule& r = *rp;
 			if (c.Build < r.BuildMin || c.Build >= r.BuildMax) { continue; }
 			if ((r.DisabledWith == 1 && hasEffects) || (r.DisabledWith == 2 && hasMissiles)) { continue; }
 			found.clear();
@@ -283,7 +301,11 @@ namespace InstantCasts
 
 	const char* Name(int32_t aSkill, bool aFallback)
 	{
-		if (!aFallback) { for (auto& [id, name] : kSkillNames) { if (id == aSkill) { return name; } } }
+		if (!aFallback)
+		{
+			for (auto& [id, name] : kHandNames) { if (id == aSkill) { return name; } }
+			for (auto& [id, name] : kSkillNames) { if (id == aSkill) { return name; } }
+		}
 		else { for (auto& [id, name] : kFallbackSkillNames) { if (id == aSkill) { return name; } } }
 		return nullptr;
 	}

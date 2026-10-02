@@ -66,8 +66,8 @@ namespace Ui
 				auto num = [](const Fight&, const Player&, double v) { return Num(v); };
 				auto whole = [](const Fight&, const Player&, double v) { return std::to_string(static_cast<long long>(v)); };
 				std::vector<Column> v;
-				v.push_back({"Healing /s", "Healing Stats, per second alive", [](const Fight&, const Player& p) { return p.HealKnown ? PerS(p, double(p.Heal)) : kUnknown; }, num, S_Support});
-				v.push_back({"Barrier /s", "Barrier given, per second", [](const Fight&, const Player& p) { return p.HealKnown ? PerS(p, double(p.Barrier)) : kUnknown; }, num, S_Support});
+				v.push_back({"Healing", "Healing Stats, whole round", [](const Fight&, const Player& p) { return p.HealKnown ? double(p.Heal) : kUnknown; }, num, S_Support});
+				v.push_back({"Barrier", "Barrier given, whole round", [](const Fight&, const Player& p) { return p.HealKnown ? double(p.Barrier) : kUnknown; }, num, S_Support});
 				v.push_back({"Cleanses", "Ally conditions removed", [](const Fight&, const Player& p) { return double(p.Cleanses); }, whole, S_Support});
 				v.push_back({"CC covered", "Subgroup CC hitting their stability", [](const Fight&, const Player& p) { return p.StabAllyMs > 0 && p.StabEligible >= 3 ? double(p.StabCovered) / p.StabEligible : -1.0; },
 					[](const Fight&, const Player& p, double v) { return v < 0 ? std::string("-") : Share(p.StabCovered, p.StabEligible, 3); }, S_Support});
@@ -80,8 +80,8 @@ namespace Ui
 					{ if (v < 0) { return std::string("-"); }
 					  int n = 0, all = 0; for (auto& u : p.ReviveUses) { all += u.Done; n += u.Done && u.DownNear > 0; }
 					  return std::to_string(n) + " of " + std::to_string(all); }, S_Support});
-				v.push_back({"Damage /s", "To enemy players, per second", [](const Fight&, const Player& p) { return PerS(p, double(p.Damage)); }, num, S_Damage});
-				v.push_back({"Damage all /s", "To anything hostile", [](const Fight&, const Player& p) { return PerS(p, double(p.DamageAll)); }, num, S_Damage});
+				v.push_back({"Damage", "To enemy players", [](const Fight&, const Player& p) { return double(p.Damage); }, num, S_Damage});
+				v.push_back({"Damage all", "To anything hostile", [](const Fight&, const Player& p) { return double(p.DamageAll); }, num, S_Damage});
 				v.push_back({"In spikes", "Their damage within 2 s of our spikes", [](const Fight& f, const Player& p)
 					{ double in = 0, all = 0;
 					  for (size_t s = 0; s < p.DamagePerS.size(); s++)
@@ -91,22 +91,24 @@ namespace Ui
 					  }
 					  return all > 0 ? 100.0 * in / all : kUnknown; },
 					[](const Fight&, const Player&, double x) { return Pct(x); }, S_Damage});
-				v.push_back({"Strips", "Enemy boons removed", [](const Fight&, const Player& p) { return double(p.Strips); }, whole, S_Damage | S_Support});
+				v.push_back({"Strips", "Enemy boons removed", [](const Fight&, const Player& p) { return double(p.Strips); }, whole, S_Damage});
 				v.push_back({"CC dealt", "CC landed on enemies", [](const Fight&, const Player& p) { return double(p.CcDealt); }, whole, S_Damage});
 				v.push_back({"Negated", "Evaded, blocked or absorbed hits", [](const Fight&, const Player& p) { return double(p.Evades + p.Blocks + p.Invulns); }, whole, S_Defence});
-				v.push_back({"Taken /s", "Damage taken per second", [](const Fight&, const Player& p) { return PerS(p, double(p.DamageTaken)); }, num, S_Defence});
+				v.push_back({"Taken", "Damage taken", [](const Fight&, const Player& p) { return double(p.DamageTaken); }, num, S_Defence});
+				v.push_back({"Pets took", "Enemy hits on their pets", [](const Fight&, const Player& p) { return double(p.PetsTook); }, num, S_Defence});
 				v.push_back({"Evades", "Enemy hits evaded", [](const Fight&, const Player& p) { return double(p.Evades); }, whole, S_Defence});
 				v.push_back({"Blocks", "Enemy hits blocked", [](const Fight&, const Player& p) { return double(p.Blocks); }, whole, S_Defence});
 				v.push_back({"Invulns", "Enemy hits absorbed", [](const Fight&, const Player& p) { return double(p.Invulns); }, whole, S_Defence});
 				v.push_back({"CC taken", "Times crowd controlled", [](const Fight&, const Player& p) { return double(p.CcTaken); }, whole, S_Defence});
 				for (int b = 0; b < Analysis::kBoons; b++)
 				{
-					unsigned sets = S_Boons | (b == 2 || b == 7 || b == Analysis::kStability ? S_Support : 0) | (b == 0 ? S_Damage : 0);
+					unsigned sets = S_Boons | (b == 0 ? S_Damage : 0); // Support has CC covered for stability; boons in Boons
 					v.push_back({Analysis::kBoonNames[b], "Given to own subgroup", [b](const Fight& f, const Player& p) { return f.GroupGeneration(p, b); },
 						[b](const Fight& f, const Player&, double x) { return f.Intensity[b] ? Num(x) : Pct(x); }, sets});
 				}
-				v.push_back({"Downed", "Times downed", [](const Fight&, const Player& p) { return double(p.Downs); }, whole, S_Support | S_Damage | S_Defence | S_Boons});
-				v.push_back({"Died", "Times died", [](const Fight&, const Player& p) { return double(p.Deaths); }, whole, S_Support | S_Damage | S_Defence | S_Boons});
+				// one column for both (a set fits the window without a scroll): sorted by downs, then deaths
+				v.push_back({"Downed / died", "Times downed, times died", [](const Fight&, const Player& p) { return p.Downs + p.Deaths * 0.01; },
+					[](const Fight&, const Player& p, double) { return std::to_string(p.Downs) + " / " + std::to_string(p.Deaths); }, S_Support | S_Damage | S_Defence | S_Boons});
 				return v;
 			}();
 			return cols;
@@ -114,19 +116,19 @@ namespace Ui
 
 		void UsAndEnemy(const Fight& f)
 		{
-			if (!ImGui::BeginTable("round", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) { return; }
-			const char* heads[] = {"", "Players", "Downed", "Killed", "Damage", "Spikes"};
+			if (!ImGui::BeginTable("round", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) { return; }
+			const char* heads[] = {"", "Players", "Downed", "Killed", "Damage", "Spikes", "Pets took"};
 			for (const char* h : heads) { ImGui::TableSetupColumn(h, ImGuiTableColumnFlags_WidthFixed, h[0] ? 70.0f : 60.0f); }
 			Headers({{"", nullptr}, {"Players", nullptr}, {"Downed", "Of this side"}, {"Killed", "Of this side"}, {"Damage", "Dealt by this side"},
-				{"Spikes", "Damage peaks"}});
+				{"Spikes", "Damage peaks"}, {"Pets took", "Hits on pets and minions"}});
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn(); Key(kYou, "Us");
 			NumCell(std::to_string(f.SquadCount)); NumCell(std::to_string(f.SquadDowns)); NumCell(std::to_string(f.SquadDeaths));
-			NumCell(Num(double(f.SquadDamage))); NumCell(std::to_string(f.OurSpikesMs.size()));
+			NumCell(Num(double(f.SquadDamage))); NumCell(std::to_string(f.OurSpikesMs.size())); NumCell(Num(double(f.SquadPetsTook)));
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn(); Key(kEnemy, "Enemy");
 			NumCell(std::to_string(f.EnemyCount)); NumCell(std::to_string(f.EnemyDowns)); NumCell(std::to_string(f.EnemyDeaths));
-			NumCell(Num(double(f.EnemyDamage))); NumCell(std::to_string(f.TheirSpikesMs.size()));
+			NumCell(Num(double(f.EnemyDamage))); NumCell(std::to_string(f.TheirSpikesMs.size())); NumCell(Num(double(f.EnemyPetsTook)));
 			ImGui::EndTable();
 		}
 
@@ -230,24 +232,34 @@ namespace Ui
 		{
 			const Fight& f = *c.F;
 			State& s = S();
+			// opens on your role's set until you pick one (a damage player landed on Support)
+			int set0 = s.ColumnSet >= 0 ? s.ColumnSet : c.MyRole == R_Damage || c.MyRole == R_Strip ? 1 : 0;
 			ImGui::TextUnformatted("Players");
 			for (int i = 0; i < 6; i++)
 			{
 				ImGui::SameLine(0, i ? 4.0f : 16.0f);
-				if (ImGui::RadioButton(kSetNames[i], s.ColumnSet == i)) { s.ColumnSet = i; }
+				if (ImGui::RadioButton(kSetNames[i], set0 == i)) { s.ColumnSet = set0 = i; }
 			}
 			ImGui::SameLine(0, 20);
-			if (s.ColumnSet == kStabilitySet)
+			if (set0 == kStabilitySet)
 			{
 				ImGui::TextColored(kMuted, "Their subgroup over time: Round, Stability over time.");
 				StabilityGivers(c);
 				return;
 			}
-			ImGui::TextColored(kMuted, "Click a heading to sort, a name to compare with them.");
+			if (set0 == 0 || set0 == 4)
+			{
+				// healing and barrier are known only for players running Healing Stats
+				int known = static_cast<int>(std::count_if(f.Players.begin(), f.Players.end(), [](const Player& p) { return p.HealKnown; }));
+				ImGui::NewLine();
+				ImGui::TextColored(kMuted, "Healing and barrier come from Healing Stats: %d of %d players ran it, the rest are unknown and listed last.", known, static_cast<int>(f.Players.size()));
+			}
+			else { ImGui::TextColored(kMuted, "Click a heading to sort, a name to compare with them."); }
 
 			const auto& all = Columns();
+			constexpr double kUnknownKey = -1e300;
 			std::vector<int> cols;
-			unsigned set = s.ColumnSet == 4 ? ~0u : (1u << s.ColumnSet);
+			unsigned set = set0 == 4 ? ~0u : (1u << set0);
 			for (int i = 0; i < static_cast<int>(all.size()); i++) { if (all[i].Sets & set) { cols.push_back(i); } }
 			ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollY |
 				ImGuiTableFlags_ScrollX | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Resizable;
@@ -255,15 +267,17 @@ namespace Ui
 			if (!ImGui::BeginTable("players", 3 + static_cast<int>(cols.size()), flags, ImVec2(0, height))) { return; }
 			ImGui::TableSetupScrollFreeze(3, 1);
 			ImGui::TableSetupColumn("Sg", ImGuiTableColumnFlags_WidthFixed, 30, 1000);
-			ImGui::TableSetupColumn("Spec", ImGuiTableColumnFlags_WidthFixed, 125, 1002);
-			ImGui::TableSetupColumn("Player", ImGuiTableColumnFlags_WidthFixed, 170, 1001);
+			// the spec as its icon (the name on hover): the columns fit the window without a scroll
+			ImGui::TableSetupColumn("##spec", ImGuiTableColumnFlags_WidthFixed, ImGui::GetTextLineHeight() + 4, 1002);
+			ImGui::TableSetupColumn("Player", ImGuiTableColumnFlags_WidthFixed, 150, 1001);
 			for (size_t i = 0; i < cols.size(); i++)
 			{
 				ImGuiTableColumnFlags cf = ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_PreferSortDescending | (i == 0 ? ImGuiTableColumnFlags_DefaultSort : 0);
-				float w = std::string(all[cols[i]].Label) == "CC covered" ? 115.0f : 90.0f;
+				// as wide as the heading or the numbers need (they were 90 each: a set needed a horizontal scroll)
+				float w = std::string(all[cols[i]].Label) == "CC covered" ? 115.0f : std::max(58.0f, ImGui::CalcTextSize(all[cols[i]].Label).x + 22);
 				ImGui::TableSetupColumn(all[cols[i]].Label, cf, w, static_cast<ImGuiID>(cols[i]));
 			}
-			std::vector<std::pair<const char*, const char*>> heads = {{"Sg", "Subgroup"}, {"Spec", "Specialization"}, {"Player", nullptr}};
+			std::vector<std::pair<const char*, const char*>> heads = {{"Sg", "Subgroup"}, {"##spec", "Specialization"}, {"Player", nullptr}};
 			for (int i : cols) { heads.push_back({all[i].Label, all[i].Tip}); }
 			Headers(heads);
 
@@ -277,7 +291,7 @@ namespace Ui
 			auto key = [&](const Player& p) -> double
 			{
 				if (sortId == 1000) { return p.Subgroup; }
-				if (sortId >= 0 && sortId < static_cast<int>(all.size())) { double v = all[sortId].Value(f, p); return std::isnan(v) ? -1 : v; }
+				if (sortId >= 0 && sortId < static_cast<int>(all.size())) { double v = all[sortId].Value(f, p); return std::isnan(v) ? kUnknownKey : v; }
 				return 0;
 			};
 			std::vector<const Player*> rows;
@@ -288,17 +302,22 @@ namespace Ui
 				if (sortId == 1002 && a->Spec != b->Spec) { return asc ? a->Spec < b->Spec : a->Spec > b->Spec; }
 				if (sortId == 1002) { return a->Name < b->Name; }
 				double x = key(*a), y = key(*b);
+				if ((x == kUnknownKey) != (y == kUnknownKey)) { return y == kUnknownKey; } // unknown last, either direction
 				return asc ? x < y : x > y;
 			});
 			double sortedMax = 0;
-			if (sortId >= 0 && sortId < static_cast<int>(all.size())) { for (const Player* p : rows) { sortedMax = std::max(sortedMax, key(*p)); } }
+			if (sortId >= 0 && sortId < static_cast<int>(all.size())) { for (const Player* p : rows) { if (key(*p) != kUnknownKey) { sortedMax = std::max(sortedMax, key(*p)); } } }
 			for (const Player* p : rows)
 			{
 				ImGui::TableNextRow();
 				NumCell(std::to_string(p->Subgroup));
 				ImGui::TableNextColumn();
-				SpecIcon(*p);
-				ImGui::TextUnformatted(p->Spec.c_str());
+				{
+					float lh = ImGui::GetTextLineHeight();
+					SpecIconAt(ImGui::GetWindowDrawList(), ImGui::GetCursorScreenPos(), lh, *p);
+					ImGui::Dummy(ImVec2(lh, lh));
+					if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", p->Spec.c_str()); }
+				}
 				ImGui::TableNextColumn();
 				std::string name = p->Name + (p->Pov ? " (you)" : "");
 				if (ImGui::Selectable(name.c_str(), false) && !p->Pov) { S().VsAccount = p->Account; }
@@ -322,7 +341,6 @@ namespace Ui
 
 	void SquadTab(const Ctx& c)
 	{
-		if (!c.OneRound) { ImGui::TextColored(kMuted, "Squad shows the round picked at the top; Tonight doesn't apply here."); }
 		UsAndEnemy(*c.F);
 		ImGui::Spacing();
 		Subgroups(c);

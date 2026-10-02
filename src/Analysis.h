@@ -17,6 +17,7 @@ namespace Analysis
 	constexpr int kBoons = 12;
 	extern const std::array<uint32_t, kBoons> kBoonIds;
 	extern const std::array<const char*, kBoons> kBoonNames;
+	constexpr int32_t kTraitBase = -100000; // a skill row for a trait: kTraitBase - the trait's id (boons it gave, "Trait: <name>")
 	constexpr int kStability = 8;
 
 	enum Timing { T_IntoOurs, T_AheadOfTheirs, T_AnsweringTheirs, T_Count };
@@ -86,7 +87,12 @@ namespace Analysis
 		int         Subgroup = 0;
 		bool        Pov = false;       // whose log this is: "you"
 		bool        HealKnown = false; // their own Healing Stats reported their heals
+		int64_t     HealLate = 0;      // healing that reached the log in a late batch: in the totals, on no time line
+		int32_t     HealLateMs = -1;   // when the first such batch arrived (ms from fight start), -1 none
+		int64_t     PetsTook = 0;      // enemy damage their pets and minions took (hits that could have gone to a player)
+		int         Rounds = 0;        // summed players (Ui::Sum): rounds in the scope; 0 or 1 = one round, shown as totals
 		int64_t     ActiveMs = 0;      // fight time not dead
+		int64_t     FightMs = 0;       // summed players (Ui::Sum): the rounds' length, group generation's time base
 		int64_t     Heal = 0, HealDowned = 0, Barrier = 0, Damage = 0, DamageAll = 0;
 		int         Strips = 0, Cleanses = 0, CleansesSelf = 0, Evades = 0, Blocks = 0, Invulns = 0;
 		int         Downs = 0, Deaths = 0;
@@ -126,6 +132,10 @@ namespace Analysis
 		// it ends. By: index in Fight::Players (-1 unknown); RanOut: it ended at its full length
 		struct Illusion { int32_t From = 0, To = 0; int By = -1; bool RanOut = false; };
 		std::vector<Illusion> IllusionOfLife;
+		// Healing on them while downed (Healing Stats, the healer's own report): a revive skill's pulse shows here (a
+		// Spirit of Nature's Nature's Renewal lands about 0.9 s after the cast; 554 get-ups on 30 Sept came with one)
+		struct DownHeal { int32_t Ms = 0, Skill = 0; int By = -1; int32_t Amount = 0; };
+		std::vector<DownHeal> DownHealsIn;
 		std::vector<TakenHit> EvadedIn;                      // enemy strikes this player evaded (Damage: 0)
 		// Elite Insights' down contribution: damage this player did to enemy players from their last 90% health to a
 		// down that led to their death
@@ -136,8 +146,15 @@ namespace Analysis
 		std::vector<std::pair<int32_t, int>> StabLost;   // (ms, 0 stripped all at once / 1 a stack used up)
 		// Each moment this player gave stability: when, the skill it's credited to, and whom it reached (indices into
 		// Fight::Players, the giver included). Pulses to several allies within 150 ms are one moment.
-		struct StabGive { int32_t Ms = 0; int32_t Skill = 0; std::vector<int> Targets; };
+		// SelfOnly: this round, the skill's stability (almost) never reached anyone but the caster: not stability given
+		struct StabGive { int32_t Ms = 0; int32_t Skill = 0; std::vector<int> Targets; bool SelfOnly = false; };
 		std::vector<StabGive> StabGives;
+		// Stability given to others: its nominal presence and the part of it TopStats calls redundant (on top of another
+		// provider's that was still running); the enemy spikes they could act in and, summed, the share of their
+		// subgroup carrying their stability at each spike's peak
+		int64_t     StabAllyNominalMs = 0, StabRedundantMs = 0;
+		int         StabSpikes = 0;
+		double      StabSpikeShare = 0;
 		std::array<std::vector<std::pair<int32_t, int32_t>>, kBoons> BoonOn; // merged spans with the boon, any giver
 		std::vector<std::pair<int32_t, int32_t>> Hp;         // (ms, health % x 100)
 		struct Point { int32_t Ms; float X, Y; };
@@ -159,6 +176,7 @@ namespace Analysis
 		std::array<double, kBoons> BoonSquadS{}; // seconds given to the rest of the squad
 		std::array<double, kBoons> BoonGroupS{}; // seconds given to the own subgroup, self excluded
 		std::map<int32_t, SkillRow> Skills;      // 0 = no cast (traits, relics, sigils) for attributed values
+		std::vector<std::pair<int32_t, int>> OtherBoonMs; // (ms, boon) given to others with no skill found: for tools/frcheck
 
 		double PerMin(double aValue) const { return ActiveMs > 0 ? aValue * 60000.0 / ActiveMs : 0.0; }
 		// EI squad generation as TopStats shows it: stacks (intensity) or % (queued), averaged over the others
@@ -169,6 +187,7 @@ namespace Analysis
 		std::filesystem::path Path;
 		std::string           Stamp;      // yyyymmdd-hhmmss from the file name (the fight's end)
 		int64_t               DurationMs = 0;
+		int64_t               LogStart = 0; // the log's time at fight start (every "ms from fight start" counts from here)
 		int                   SquadCount = 0, EnemyCount = 0;
 		struct Enemy
 		{
@@ -176,10 +195,12 @@ namespace Analysis
 			std::vector<Player::Point> Pos;
 			std::vector<std::pair<int32_t, int32_t>> Hp; // (ms, health % x 100)
 			std::vector<Span> DownSpans;                 // downed (Dead false) and dead (Dead true), as for players
+			bool Fought = false;                         // hit us or took our hits: counted in EnemyCount (the enemy squad)
 		};
 		std::vector<Enemy>    Enemies;   // enemy players who hit us or had a position: spec, positions, health, downs
 		int                   SquadDowns = 0, SquadDeaths = 0, EnemyDowns = 0, EnemyDeaths = 0;
 		int64_t               SquadDamage = 0, EnemyDamage = 0; // damage dealt by each side (players and minions)
+		int64_t               SquadPetsTook = 0, EnemyPetsTook = 0; // damage each side's pets and minions took from the other
 		std::vector<Player>   Players;    // present squad members
 		int                   Pov = -1;   // index into Players
 		bool                  PovAbsent = false; // the recorder is in the squad but took no part in this round

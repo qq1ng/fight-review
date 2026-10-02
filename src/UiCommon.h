@@ -27,7 +27,7 @@ namespace Ui
 	extern const ImVec4 kMuted;           // secondary text
 	extern const ImU32 kYou, kPeer, kPeerTick, kEnemy, kTrack, kLaneBg, kOurBand, kEnemyBand, kEnemyPre;
 
-	enum Tab { T_You, T_Deaths, T_Compare, T_Round, T_Squad, T_Tonight, T_TabCount };
+	enum Tab { T_Summary, T_You, T_Deaths, T_Compare, T_Round, T_Squad, T_TabCount };
 	enum Role { R_Heal, R_Stab, R_Damage, R_Strip };
 	// A common build of a spec, from an audit of the user's logs (src/SpecJobs.inc)
 	// A row of a spec's main jobs (src/SpecJobs.inc): appended when When holds for the player ("" = always)
@@ -38,7 +38,10 @@ namespace Ui
 	struct State
 	{
 		int         Selected = -1;      // round index, -1 = follow the latest
-		bool        AllRounds = false;  // This round / Tonight
+		// This round / Tonight, per tab (the v6 audit: one global switch and a Tonight tab meant two things)
+		bool        YouTonight = false;     // You: the night (fixes that keep coming back) instead of this round
+		bool        CompareTonight = false; // Compare and Squad: every round loaded, added up
+		bool        SquadTonight = false;
 		std::string VsAccount;          // "" = the best on your spec
 		int         SwitchTo = -1;      // a tab to select next frame
 		// Review: breadcrumb level and the open fix line
@@ -53,7 +56,7 @@ namespace Ui
 		bool        CompareMore[2] = {false, false}; // the folded skills shown: only one used it, both did
 		std::string CompareLeft, CompareRight; // Compare's two players by account; "" = you / your compared player
 		// Squad
-		int         ColumnSet = 0;
+		int         ColumnSet = -1;     // Squad's column set; -1 until picked: your role's
 		bool        AllBoons = false;
 		// Deaths: the revive order
 		std::vector<std::string> ReviveOrder; // accounts in your revive order; empty = the usual order (saved)
@@ -62,7 +65,9 @@ namespace Ui
 		// Round
 		int         RoundView = 0;      // 0: spikes, 1: stability over time
 		std::vector<int32_t> Picked;    // skills marked on the round's time line and drawn in the spike breakdown
+		std::vector<int32_t> PickedEnemy; // enemy skills marked on the round's time line (their rails under the graph)
 		int64_t     SpikeOpen = -1;     // the spike broken down (its time), -1 = the round
+		bool        SpikeEnemy = false; // the spike broken down is theirs
 		std::string SpikeStamp;         // the round it belongs to
 		// Deaths
 		std::string DeathKey;           // the down shown: round/account/ms, "" = the first that fits the filter
@@ -70,6 +75,10 @@ namespace Ui
 		int64_t     DeathSpike = -1;    // an enemy spike opened from the Round tab: its downs first
 	};
 	State& S();
+	// The snapshot's version this frame (Session::Snapshot::Version): per-round caches key on it, so a round re-read
+	// (or a new night) never leaves them pointing into rounds that are gone
+	uint64_t DataVersion();
+	void SetDataVersion(uint64_t aVersion);
 	void SaveSettings(); // the settings file: the summary window, your revive order
 
 	// ---- metrics (per skill) ------------------------------------------------------------------------------------
@@ -86,8 +95,15 @@ namespace Ui
 	const std::vector<Metric>& Metrics();
 	constexpr int kMetricHeal = 0, kMetricBarrier = 1, kMetricDamage = 2, kMetricDamageAll = 3, kMetricStrips = 4,
 		kMetricCleanses = 5, kMetricGroupBoon = 6; // + boon index
-	const char* RateUnit(const Metric& m);
+	// One round: healing, damage, cleanses and strips as the round's totals (what ArcDPS and Healing Stats show; the
+	// user, 2026-09-27: per minute made a short round's numbers look off). Several rounds: per second or per minute.
+	// Boons are always stacks or % uptime.
+	bool Totals(const Player& p);
+	const char* RateUnit(const Metric& m, const Player& p); // "" for a total
 	double Rate(const Metric& m, const Player& p, double aValue);
+	std::string WithUnit(const std::string& aNumber, const char* aUnit); // "4.8k /s", or "351k"
+	double CountRate(const Player& p, double aCount); // one round: the count; several: per minute alive
+	std::string ShownName(const std::string& aMeasure, bool aOneRound); // "Cleanses /min" -> "Cleanses" for one round
 	bool Known(const Metric& m, const Player& p);
 	int TimingWindow(int aMetric); // Analysis::Timing class that matters for this metric
 	const char* WindowLabel(int aWindow);
@@ -142,6 +158,13 @@ namespace Ui
 	double GroupGenOver(const std::vector<FightPtr>& aFights, const std::string& aAccount, const std::string& aSpec, int aBoon);
 	Role RoleOf(const Player& p);
 	int CastsCutShort(const Player& p);
+	// A spike's window: from 3 s before its peak (the build-up: downs there were counted outside it, the user's 20:18
+	// on 25 Sept) to 4 s after. On 110 held-out rounds, 1 s before caught 73% of our downs in an enemy spike, 3 s 86%,
+	// with a spike that led to a down 59% -> 66% of the time; 4 s before adds little (the rate there is near the
+	// baseline). The same holds for enemy downs in our spikes (68% -> 78%).
+	constexpr int64_t kSpikeBeforeMs = 3000, kSpikeAfterMs = 4000;
+	// The spike (its peak, ms) a moment belongs to: the nearest peak whose window holds it; -1 none
+	int64_t SpikeOf(const std::vector<int64_t>& aPeaks, int64_t aMs);
 	int64_t DeadMs(const Player& p);
 	const SkillRow* Row(const Player& p, int32_t aSkill);
 	// Share of a player's damage that landed within 2 s of one of our spikes (%), over several rounds; -1 without damage
@@ -189,6 +212,8 @@ namespace Ui
 	void Mark(ImDrawList* dl, ImVec2 aCentre, float aRadius, int aShape, ImU32 aColor); // 0 square, 1 circle, 2 diamond, 3 up, 4 down
 	void ShapeKey(int aShape, ImU32 aColor, const char* aLabel);
 	void Answer(const std::string& aText);      // the line that states the answer
+	// This round / Tonight at the right of a tab's first line; aTip explains Tonight
+	void ScopeSwitch(const char* aId, bool& aTonight, const char* aTip);
 	// One lane of the fight: our spike bands, enemy spike bands (and the 4 s before, for aWindow ahead), cast ticks
 	void Lane(const Fight& f, const std::vector<int32_t>& aTimes, ImU32 aTick, float aWidth, float aHeight, int aWindow);
 	void TimeAxis(const Fight& f, float aX, float aWidth);
@@ -211,6 +236,18 @@ namespace Ui
 	struct Down { const Player* P; Analysis::Span S; bool Died; };
 	std::vector<Down> Downs(const Fight& f);
 	bool HadBoonAt(const Player& p, int aBoon, int32_t aMs);
+	// Who got a player up from a down (not a death), from what the log shows, most direct first: an Illusion of Life
+	// put on them as they got up, a plain revive running then, a revive skill completed near them in the 3 s before.
+	// Healing on them while downed as they got up (a revive skill's pulse) counts too. "" when none (see Rallied).
+	// aSkill: the skill (1066 for a plain revive), 0 when none.
+	std::string RevivedBy(const Fight& f, const Down& d, int32_t* aSkill);
+	// Got up with no reviver: a rally when an enemy died within 0.1 s of it (30 Sept: 143 of 283 get-ups near an
+	// enemy's end came at its death, to the 50 ms)
+	bool Rallied(const Fight& f, const Down& d);
+	// A player's position nearest a moment (within 2 s), else null
+	const Player::Point* NearestPos(const Player& p, int32_t aMs);
+	// How a down ended in a few words: "revived by Tam Vey, Spirit of Nature", "rallied: ...", or unknown
+	std::string GotUpHow(const Fight& f, const Down& d);
 	// Why there is no "you" in this round: you took no part in it, or the log's recorder isn't in the squad
 	std::string NoYou(const Fight& f);
 	void CompareTab(const Ctx& c);
@@ -227,6 +264,23 @@ namespace Ui
 		std::string TopSkill;
 	};
 	DeathCause CauseOf(const Fight& f, const Player& p, const Analysis::Span& s);
-	// The small summary window's lines: your role's number and rank, the top fix
-	std::vector<std::string> SummaryLines(const Ctx& c);
+	// The small summary window: the Summary tab in a few lines (the round, your down, your job next round, the fix)
+	std::vector<std::string> SummaryWindowLines(const Ctx& c);
+
+	// The Summary tab (the v6 design, style 3b): the round for both sides, your down as a chain, your job next round
+	void SummaryTab(const Ctx& c);
+	// Your role's number this round against your usual tonight and the best on your spec, and the first fix
+	struct NextRoundFacts
+	{
+		bool Has = false, Known = false, Stab = false, YouBest = false, HasFix = false;
+		std::string Word;                        // "CC on your subgroup covered", "healing /s"
+		double You = 0, Usual = -1, Best = -1;   // -1: not known
+		std::string YouText, UsualText, BestText, BestWho;
+		std::string FixSubject, FixWhat, FixNumbers;
+		int32_t FixSkill = kNoSkill;
+	};
+	NextRoundFacts NextRound(const Ctx& c);
+	// Our spikes this round and how many damage players landed theirs on time (the Round tab's rule), added up
+	struct SpikeTally { int Spikes = 0, OnTime = 0, Alive = 0; };
+	SpikeTally OurSpikeTally(const Ctx& c);
 }

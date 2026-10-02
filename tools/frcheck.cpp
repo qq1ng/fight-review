@@ -15,7 +15,8 @@
 int Pool(int argc, char** argv)
 {
 	std::vector<std::string> paths(argv + 2, argv + argc);
-	std::array<double, Analysis::kBoons> total{}, alone{}, pooledOther{};
+	std::array<double, Analysis::kBoons> total{}, alone{}, pooledOther{}, pooledTraits{};
+	std::map<std::string, double> traitS; // "trait / boon / spec" -> seconds given to others
 	Analysis::Evidence all;
 	std::vector<Analysis::Evidence> own;
 	for (const std::string& path : paths)
@@ -59,6 +60,15 @@ int Pool(int argc, char** argv)
 					fbStab[f.SkillNames.count(skill) ? f.SkillNames.at(skill) : std::to_string(skill)] += row.BoonSquadS[Analysis::kStability];
 				}
 			}
+			for (auto& [skill, row] : p.Skills)
+			{
+				if (skill > Analysis::kTraitBase) { continue; }
+				for (int b = 0; b < Analysis::kBoons; b++)
+				{
+					pooledTraits[b] += row.BoonSquadS[b];
+					if (row.BoonSquadS[b] > 0) { traitS[f.SkillNames[skill] + " / " + Analysis::kBoonNames[b] + " / " + p.Spec] += row.BoonSquadS[b]; }
+				}
+			}
 			auto it = p.Skills.find(0);
 			if (it == p.Skills.end()) { continue; }
 			for (int b = 0; b < Analysis::kBoons; b++) { pooledOther[b] += it->second.BoonSquadS[b]; }
@@ -72,12 +82,17 @@ int Pool(int argc, char** argv)
 		if (v.first > 1000) { std::printf("stability\t%-14s %8.0f s given, %5.1f%% other sources\n", spec.c_str(), v.first, 100 * v.second / v.first); }
 	}
 	std::printf("%zu rounds; %zu skill-profession pairs seen, most learned player-skill givers in a round %zu\n", paths.size(), all.ByProfession.size(), learnedPooled);
-	std::printf("%-14s %10s %22s %22s\n", "boon", "given s", "other sources, alone", "other sources, pooled");
+	std::printf("%-14s %10s %22s %22s %18s\n", "boon", "given s", "other sources, alone", "other sources, pooled", "traits, pooled");
 	for (int b = 0; b < Analysis::kBoons; b++)
 	{
 		if (total[b] <= 0) { continue; }
-		std::printf("%-14s %10.0f %21.1f%% %21.1f%%\n", Analysis::kBoonNames[b], total[b], 100 * alone[b] / total[b], 100 * pooledOther[b] / total[b]);
+		std::printf("%-14s %10.0f %21.1f%% %21.1f%% %17.1f%%\n", Analysis::kBoonNames[b], total[b], 100 * alone[b] / total[b], 100 * pooledOther[b] / total[b],
+			100 * pooledTraits[b] / total[b]);
 	}
+	std::vector<std::pair<double, std::string>> traits;
+	for (auto& [k, v] : traitS) { traits.push_back({v, k}); }
+	std::sort(traits.rbegin(), traits.rend());
+	for (size_t i = 0; i < traits.size() && i < 25; i++) { std::printf("trait\t%-60s %8.0f s\n", traits[i].second.c_str(), traits[i].first); }
 	return 0;
 }
 
@@ -136,9 +151,104 @@ int Spikes(int argc, char** argv)
 	return 0;
 }
 
+// --credited <boon index> <logs...>: seconds of that boon given to the own subgroup, per spec and skill it was credited
+// to, over all the logs (no names)
+int Credited(int argc, char** argv)
+{
+	int boon = std::atoi(argv[2]);
+	std::map<std::string, double> by;
+	for (int i = 3; i < argc; i++)
+	{
+		Analysis::Fight f = Analysis::Analyse(argv[i]);
+		for (const auto& p : f.Players)
+		{
+			for (const auto& [skill, row] : p.Skills)
+			{
+				if (row.BoonGroupS[boon] <= 0) { continue; }
+				auto n = f.SkillNames.find(skill);
+				by[p.Spec + "\t" + (n == f.SkillNames.end() ? std::to_string(skill) : n->second)] += row.BoonGroupS[boon];
+			}
+		}
+	}
+	std::vector<std::pair<double, std::string>> list;
+	for (auto& [k, s] : by) { list.push_back({s, k}); }
+	std::sort(list.rbegin(), list.rend());
+	for (auto& [s, k] : list) { std::printf("%10.1f\t%s\n", s, k.c_str()); }
+	return 0;
+}
+
+// --others <spec> <boon index> <logs...>: each moment a player on that spec gave the boon to someone else with no
+// skill found for it ("other sources"), as the log's own time: "other <log> <agent address> <time>" (no names)
+int Others(int argc, char** argv)
+{
+	std::string spec = argv[2];
+	int boon = std::atoi(argv[3]);
+	for (int i = 4; i < argc; i++)
+	{
+		Analysis::Fight f = Analysis::Analyse(argv[i]);
+		for (const auto& p : f.Players)
+		{
+			if (p.Spec != spec) { continue; }
+			int32_t last = INT32_MIN / 2;
+			for (auto& [ms, b] : p.OtherBoonMs)
+			{
+				if (b != boon || ms - last < 150) { continue; }
+				last = ms;
+				std::printf("other\t%s\t%llu\t%lld\n", argv[i], static_cast<unsigned long long>(p.Addr), static_cast<long long>(f.LogStart + ms));
+			}
+		}
+	}
+	return 0;
+}
+
+// --selfstab <logs...>: per spec and skill, the stability moments credited to it and how many reached anyone but the
+// giver (a skill that never does gives stability to the caster only)
+int SelfStab(int argc, char** argv)
+{
+	std::map<std::string, std::pair<int, int>> by;
+	for (int i = 2; i < argc; i++)
+	{
+		Analysis::Fight f = Analysis::Analyse(argv[i]);
+		for (size_t k = 0; k < f.Players.size(); k++)
+		{
+			const auto& p = f.Players[k];
+			for (const auto& g : p.StabGives)
+			{
+				auto n = f.SkillNames.find(g.Skill);
+				auto& e = by[p.Spec + "\t" + (n == f.SkillNames.end() ? std::to_string(g.Skill) : n->second)];
+				e.first++;
+				e.second += std::any_of(g.Targets.begin(), g.Targets.end(), [&](int t) { return t != static_cast<int>(k); });
+			}
+		}
+	}
+	for (auto& [k, v] : by) { std::printf("%6d moments, %6d reached others (%3d%%)\t%s\n", v.first, v.second, v.first ? 100 * v.second / v.first : 0, k.c_str()); }
+	return 0;
+}
+
+// Stability givers: presence on allies (nominal), TopStats' redundancy, and their stability on the subgroup at enemy
+// spikes. One line per giver: stamp, character, spec, ally s, redundancy %, spikes, share at spikes %
+int StabRed(int argc, char** argv)
+{
+	for (int i = 2; i < argc; i++)
+	{
+		Analysis::Fight f = Analysis::Analyse(argv[i]);
+		for (const auto& p : f.Players)
+		{
+			if (p.StabAllyNominalMs < 5000) { continue; }
+			std::printf("%s\t%s\t%s\t%.1f\t%.1f\t%d\t%.0f\n", f.Stamp.c_str(), p.Name.c_str(), p.Spec.c_str(), p.StabAllyNominalMs / 1000.0,
+				100.0 * double(p.StabRedundantMs) / double(p.StabAllyNominalMs), p.StabSpikes, p.StabSpikes ? 100.0 * p.StabSpikeShare / p.StabSpikes : -1.0);
+		}
+	}
+	return 0;
+}
+
 int main(int argc, char** argv)
 {
+	if (argc >= 3 && std::string(argv[1]) == "--stabred") { return StabRed(argc, argv); }
+	if (argc >= 5 && std::string(argv[1]) == "--others") { return Others(argc, argv); }
+	if (argc >= 3 && std::string(argv[1]) == "--selfstab") { return SelfStab(argc, argv); }
 	if (argc >= 2 && std::string(argv[1]) == "--spikes") { return Spikes(argc, argv); }
+	if (argc >= 4 && std::string(argv[1]) == "--credited") { return Credited(argc, argv); }
 	// --evidence <skill id> <logs...>: the pooled evidence that a skill gives stability (per profession and per player)
 	if (argc >= 4 && std::string(argv[1]) == "--evidence")
 	{
@@ -167,7 +277,7 @@ int main(int argc, char** argv)
 			{
 				if (g.Ms < a || g.Ms > b) { continue; }
 				auto it = f.SkillNames.find(g.Skill);
-				std::printf("%8d ms  %-40s %zu targets\n", g.Ms, it == f.SkillNames.end() ? std::to_string(g.Skill).c_str() : it->second.c_str(), g.Targets.size());
+				std::printf("%8d ms  %-40s %6d  %zu targets\n", g.Ms, it == f.SkillNames.end() ? std::to_string(g.Skill).c_str() : it->second.c_str(), g.Skill, g.Targets.size());
 			}
 		}
 		return 0;

@@ -3,10 +3,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
+#include <unordered_map>
 
 #include "Icons.h"
 #include "SkillIcons.h"
+#include "imgui/imgui_internal.h"
 
 namespace Ui
 {
@@ -112,20 +115,43 @@ namespace Ui
 		return m;
 	}
 
+	bool Totals(const Player& p) { return p.Rounds <= 1; }
+
 	// Boons: seconds given per second alive = allies kept covered (queued boons) or stacks kept on others (intensity)
-	const char* RateUnit(const Metric& m)
+	const char* RateUnit(const Metric& m, const Player& p)
 	{
 		switch (m.What)
 		{
-		case K_Amount: return "/s";
-		case K_Count: return "/min";
-		default: return m.Intensity ? "stacks" : "allies";
+		case K_Amount: return Totals(p) ? "" : "/s";
+		case K_Count: return Totals(p) ? "" : "/min";
+		default: return m.Intensity ? "stacks" : "% uptime";
 		}
 	}
 
 	double Rate(const Metric& m, const Player& p, double aValue)
 	{
+		// boons to the subgroup (summed players): stacks, or % uptime, over the rounds' length, as TopStats
+		if (m.What == K_Boon && p.FightMs > 0) { return aValue * 1000.0 / p.FightMs * (m.Intensity ? 1.0 : 100.0); }
+		if (m.What != K_Boon && Totals(p)) { return aValue; }
 		return m.What == K_Count ? PerS(p, aValue) * 60.0 : PerS(p, aValue);
+	}
+
+	double CountRate(const Player& p, double aCount) { return Totals(p) ? aCount : PerS(p, aCount) * 60.0; }
+
+	std::string WithUnit(const std::string& aNumber, const char* aUnit)
+	{
+		return aUnit && aUnit[0] ? aNumber + " " + aUnit : aNumber;
+	}
+
+	std::string ShownName(const std::string& aMeasure, bool aOneRound)
+	{
+		if (!aOneRound) { return aMeasure; }
+		for (const char* unit : {" /min", " /s"})
+		{
+			size_t n = std::strlen(unit);
+			if (aMeasure.size() > n && aMeasure.compare(aMeasure.size() - n, n, unit) == 0) { return aMeasure.substr(0, aMeasure.size() - n); }
+		}
+		return aMeasure;
 	}
 
 	bool Known(const Metric& m, const Player& p) { return !m.NeedsHealing || p.HealKnown; }
@@ -163,7 +189,15 @@ namespace Ui
 				}
 				out.Pov |= p.Pov;
 				out.HealKnown |= p.HealKnown;
+				out.Rounds = static_cast<int>(aFights.size()); // the scope, not the rounds played: one rule for everyone compared
+				out.HealLate += p.HealLate; out.PetsTook += p.PetsTook;
+				if (out.HealLateMs < 0) { out.HealLateMs = p.HealLateMs; }
 				out.ActiveMs += p.ActiveMs;
+				out.FightMs += f->DurationMs;
+				// boons to the subgroup as TopStats' group generation: per other member of the subgroup (scaled per
+				// round, subgroups change size), over the fight's length (Rate), so Compare and You show one number
+				auto gs = f->GroupSize.find(p.Subgroup);
+				double perMember = gs != f->GroupSize.end() && gs->second >= 2 ? 1.0 / (gs->second - 1) : 0.0;
 				out.Heal += p.Heal; out.HealDowned += p.HealDowned; out.Barrier += p.Barrier; out.Damage += p.Damage;
 				out.DamageAll += p.DamageAll; out.Strips += p.Strips; out.Cleanses += p.Cleanses;
 				out.Evades += p.Evades; out.Blocks += p.Blocks; out.Invulns += p.Invulns; out.Downs += p.Downs;
@@ -172,21 +206,56 @@ namespace Ui
 				out.HealToOthers += p.HealToOthers; out.DownedMs += p.DownedMs;
 				out.DownSpans.insert(out.DownSpans.end(), p.DownSpans.begin(), p.DownSpans.end());
 				out.StabEligible += p.StabEligible; out.StabCovered += p.StabCovered; out.StabReady += p.StabReady;
+				out.StabAllyNominalMs += p.StabAllyNominalMs; out.StabRedundantMs += p.StabRedundantMs; out.StabSpikes += p.StabSpikes; out.StabSpikeShare += p.StabSpikeShare;
 				out.StabAllyMs += p.StabAllyMs; out.StabSelfMs += p.StabSelfMs;
 				out.CcDealt += p.CcDealt; out.Legends |= p.Legends; out.DownContribution += p.DownContribution;
 				out.ReviveUses.insert(out.ReviveUses.end(), p.ReviveUses.begin(), p.ReviveUses.end());
-				for (int b = 0; b < Analysis::kBoons; b++) { out.BoonGroupS[b] += p.BoonGroupS[b]; out.BoonSquadS[b] += p.BoonSquadS[b]; }
+				for (int b = 0; b < Analysis::kBoons; b++) { out.BoonGroupS[b] += p.BoonGroupS[b] * perMember; out.BoonSquadS[b] += p.BoonSquadS[b]; }
 				for (auto& [skill, row] : p.Skills)
 				{
 					auto& o = out.Skills[skill];
 					o.Casts += row.Casts; o.Hits += row.Hits; o.Heal += row.Heal; o.Barrier += row.Barrier; o.Damage += row.Damage;
 					o.DamageAll += row.DamageAll; o.Strips += row.Strips; o.Cleanses += row.Cleanses;
 					o.Interrupted += row.Interrupted; o.Cancelled += row.Cancelled;
-					for (int b = 0; b < Analysis::kBoons; b++) { o.BoonGroupS[b] += row.BoonGroupS[b]; o.BoonSquadS[b] += row.BoonSquadS[b]; }
+					for (int b = 0; b < Analysis::kBoons; b++) { o.BoonGroupS[b] += row.BoonGroupS[b] * perMember; o.BoonSquadS[b] += row.BoonSquadS[b]; }
 					for (int k = 0; k < Analysis::T_Count; k++) { o.Timing[k] += row.Timing[k]; }
 				}
 			}
 			for (auto& [id, name] : f->SkillNames) { aNames.emplace(id, name); }
+		}
+		// one row per skill name across the rounds too (a trait-changed id in one round, the other id in another), within
+		// the profession as the analysis does: the lowest id of the name in its players' rows
+		std::map<std::string, int32_t> firstId;
+		for (const FightPtr& f : aFights)
+		{
+			for (const Player& p : f->Players)
+			{
+				if (p.ProfId != out.ProfId) { continue; }
+				for (auto& [id, row] : p.Skills)
+				{
+					auto n = aNames.find(id);
+					if (id <= 0 || n == aNames.end() || n->second.empty() || std::to_string(id) == n->second) { continue; }
+					auto it = firstId.emplace(n->second, id).first;
+					it->second = std::min(it->second, id);
+				}
+			}
+		}
+		std::vector<int32_t> moved;
+		for (auto& [id, row] : out.Skills)
+		{
+			auto n = aNames.find(id);
+			if (id > 0 && n != aNames.end() && firstId.count(n->second) && firstId[n->second] != id) { moved.push_back(id); }
+		}
+		for (int32_t id : moved)
+		{
+			SkillRow from = out.Skills[id];
+			out.Skills.erase(id);
+			SkillRow& o = out.Skills[firstId[aNames[id]]];
+			o.Casts += from.Casts; o.Hits += from.Hits; o.Heal += from.Heal; o.Barrier += from.Barrier; o.Damage += from.Damage;
+			o.DamageAll += from.DamageAll; o.Strips += from.Strips; o.Cleanses += from.Cleanses;
+			o.Interrupted += from.Interrupted; o.Cancelled += from.Cancelled;
+			for (int b = 0; b < Analysis::kBoons; b++) { o.BoonGroupS[b] += from.BoonGroupS[b]; o.BoonSquadS[b] += from.BoonSquadS[b]; }
+			for (int k = 0; k < Analysis::T_Count; k++) { o.Timing[k] += from.Timing[k]; }
 		}
 		return out;
 	}
@@ -220,6 +289,17 @@ namespace Ui
 		int n = 0;
 		for (auto& [s, r] : p.Skills) { n += r.Interrupted + r.Cancelled; }
 		return n;
+	}
+
+	int64_t SpikeOf(const std::vector<int64_t>& aPeaks, int64_t aMs)
+	{
+		int64_t best = -1;
+		for (int64_t t : aPeaks)
+		{
+			if (aMs < t - kSpikeBeforeMs || aMs > t + kSpikeAfterMs) { continue; }
+			if (best < 0 || std::llabs(aMs - t) < std::llabs(aMs - best)) { best = t; }
+		}
+		return best;
 	}
 
 	int64_t DeadMs(const Player& p)
@@ -263,6 +343,7 @@ namespace Ui
 			for (const Player& p : f->Players)
 			{
 				if (p.Account != aAccount || p.Spec != aSpec || !p.HealKnown) { continue; }
+				if (p.HealLate * 2 > p.Heal) { continue; } // most of it arrived late, at one moment: its timing isn't known
 				known = true;
 				for (size_t s = 0; s < p.HealPerS.size(); s++)
 				{
@@ -329,19 +410,21 @@ namespace Ui
 		// What the log shows of a player's build over these rounds: Revenant legends (those in half their rounds or
 		// more), and damage and stability or quickness against each round's squad average (the median over the rounds
 		// they played 30 s or more)
-		struct BuildSigns { uint32_t Legends = 0; double Damage = 0, Support = 0; };
+		// Aid: the most the player gave of cleanses, healing (when known) or a boon, against the squad average
+		struct BuildSigns { uint32_t Legends = 0; double Damage = 0, Support = 0, Aid = 0; bool Known = false; };
 
 		BuildSigns SignsOf(const std::vector<FightPtr>& aFights, const std::string& aAccount, const std::string& aSpec)
 		{
 			BuildSigns b;
-			std::vector<double> damage, support;
+			std::vector<double> damage, support, aid;
 			std::map<uint32_t, int> legendRounds; // a legend is the build when it shows in half their rounds or more
 			int roundsWithLegends = 0;              // (one swapped in for a round or two isn't)
 			for (const FightPtr& f : aFights)
 			{
 				const Player* me = nullptr;
-				double dmg = 0, stab = 0, quick = 0;
-				int n = 0;
+				double dmg = 0, stab = 0, quick = 0, cleanses = 0, heal = 0;
+				std::array<double, Analysis::kBoons> boons{};
+				int n = 0, healers = 0;
 				for (const Player& p : f->Players)
 				{
 					if (p.Account == aAccount && p.Spec == aSpec)
@@ -354,6 +437,9 @@ namespace Ui
 					dmg += PerS(p, double(p.Damage));
 					stab += f->SquadGeneration(p, Analysis::kStability);
 					quick += f->SquadGeneration(p, 2);
+					cleanses += PerS(p, p.Cleanses);
+					if (p.HealKnown) { heal += PerS(p, double(p.Heal)); healers++; }
+					for (int k = 0; k < Analysis::kBoons; k++) { boons[k] += f->SquadGeneration(p, k); }
 					n++;
 				}
 				if (!me || me->ActiveMs < 30000 || n < 5) { continue; }
@@ -361,6 +447,10 @@ namespace Ui
 				if (dmg > 0) { damage.push_back(PerS(*me, double(me->Damage)) / dmg); }
 				support.push_back(std::max(stab > 0 ? f->SquadGeneration(*me, Analysis::kStability) / stab : 0.0,
 					quick > 0 ? f->SquadGeneration(*me, 2) / quick : 0.0));
+				double a = cleanses > 0 ? PerS(*me, me->Cleanses) / (cleanses / n) : 0.0;
+				if (me->HealKnown && heal > 0) { a = std::max(a, PerS(*me, double(me->Heal)) / (heal / healers)); }
+				for (int k = 0; k < Analysis::kBoons; k++) { if (boons[k] > 0) { a = std::max(a, f->SquadGeneration(*me, k) / (boons[k] / n)); } }
+				aid.push_back(a);
 			}
 			auto median = [](std::vector<double> v)
 			{
@@ -370,6 +460,8 @@ namespace Ui
 			};
 			for (auto& [bit, rounds] : legendRounds) { if (rounds * 2 >= roundsWithLegends) { b.Legends |= bit; } }
 			b.Damage = median(damage);
+			b.Known = !damage.empty();
+			b.Aid = median(aid);
 			b.Support = median(support);
 			return b;
 		}
@@ -406,6 +498,11 @@ namespace Ui
 			if (aWhen == "damage build") { return b.Damage >= 1.5 && b.Support < 1.5; }
 			if (aWhen == "hybrid build") { return b.Damage >= 1.5 && b.Support >= 1.5; }
 			if (aWhen == "support build") { return b.Damage < 1.5; }
+			// support: little damage and clearly giving something (1.5x the squad average of cleanses, healing or a boon);
+			// little damage and nothing given is a player who spent the rounds dead or away, judged as the power build
+			const bool support = b.Known && b.Damage < 0.6 && b.Aid >= 1.5;
+			if (aWhen == "power") { return !support; }
+			if (aWhen == "support") { return support; }
 			return false;
 		}
 	}
@@ -415,10 +512,9 @@ namespace Ui
 		// Asked for every player on your spec when a context is built: keep the answers until the rounds change
 		struct Entry { std::vector<std::string> Jobs; std::string Build; };
 		static std::map<std::string, Entry> memo;
-		static FightPtr memoLast;
-		static size_t memoCount = 0;
+		static uint64_t memoVersion = UINT64_MAX;
 		if (aFights.empty()) { return {}; }
-		if (aFights.back() != memoLast || aFights.size() != memoCount) { memo.clear(); memoLast = aFights.back(); memoCount = aFights.size(); }
+		if (memoVersion != DataVersion()) { memo.clear(); memoVersion = DataVersion(); }
 		const std::string key = aAccount + "|" + aSpec;
 		auto it = memo.find(key);
 		if (it == memo.end())
@@ -445,7 +541,7 @@ namespace Ui
 				bool legends = builds[0] == "Ventari" || builds[0] == "Mallyx" || builds[0] == "Jalis";
 				std::string list;
 				for (size_t i = 0; i < builds.size(); i++) { list += (i == 0 ? "" : i + 1 == builds.size() ? " and " : ", ") + builds[i]; }
-				e.Build = legends ? "with " + list : builds[0] == "Wanderer's" ? "in Wanderer's gear" : "on a " + list;
+				e.Build = legends ? "with " + list : builds[0] == "Wanderer's" ? "in Wanderer's gear" : builds[0] == "power" || builds[0] == "support" ? "on a " + builds[0] + " build" : "on a " + list;
 			}
 			it = memo.emplace(key, std::move(e)).first;
 		}
@@ -477,7 +573,7 @@ namespace Ui
 		{
 			const std::string& first = c.Jobs[0];
 			if (first == "Healing /s" && tonight.HealKnown) { c.MyRole = R_Heal; }
-			else if (first == "Stability on subgroup") { c.MyRole = R_Stab; }
+			else if (first == "Stability to subgroup") { c.MyRole = R_Stab; }
 			else if (first == "Strips /min") { c.MyRole = R_Strip; }
 			else if (first == "Damage to players /s") { c.MyRole = R_Damage; }
 		}
@@ -617,7 +713,7 @@ namespace Ui
 		const std::string poss = self ? "your" : aYouName + "'s", possCap = self ? "Your" : aYouName + "'s";
 		const std::string mine = self ? "yours" : aYouName + "'s", theirs = self ? "theirs" : aVsName + "'s";
 		const Metric& m = Metrics()[aMetric];
-		const std::string unit = RateUnit(m);
+		const char* unit = RateUnit(m, you);
 		const SkillRow* ry = Row(you, aSkill);
 		const SkillRow* rt = Row(vs, aSkill);
 		double vy = ry ? m.PerSkill(*ry) : 0, vt = rt ? m.PerSkill(*rt) : 0;
@@ -627,18 +723,18 @@ namespace Ui
 		w.Gap = rateT - rateY;
 		auto output = [&]
 		{
-			w.You = rateY; w.Them = rateT; w.Unit = Lower(m.Name) + (m.What == K_Boon ? "" : " " + unit);
+			w.You = rateY; w.Them = rateT; w.Unit = m.What == K_Boon ? Lower(m.Name) : WithUnit(Lower(m.Name), unit);
 			w.YouText = Num(rateY); w.ThemText = Num(rateT);
 		};
 		auto counts = [&](double aYou, double aThem, const std::string& aUnit)
 		{
 			w.You = aYou; w.Them = aThem; w.Unit = aUnit; w.YouText = Num(aYou); w.ThemText = Num(aThem);
 		};
-		const std::string cost = Num(w.Gap) + " " + unit;
+		const std::string cost = WithUnit(Num(w.Gap), unit);
 		if (w.Gap <= 0.0)
 		{
 			w.Word = rateY > 1.05 * rateT ? "more than " + aVsName : "about the same";
-			w.Sentence = subj + " got " + Num(rateY) + " " + unit + " from it, " + aVsName + " " + Num(rateT) + ".";
+			w.Sentence = subj + " got " + WithUnit(Num(rateY), unit) + " from it, " + aVsName + " " + Num(rateT) + ".";
 			output();
 			return w;
 		}
@@ -660,7 +756,7 @@ namespace Ui
 		if (cy == 0)
 		{
 			w.Word = "not used";
-			w.Sentence = subj + " didn't use it; it gave " + aVsName + " " + Num(rateT) + " " + unit + ".";
+			w.Sentence = subj + " didn't use it; it gave " + aVsName + " " + WithUnit(Num(rateT), unit) + ".";
 			counts(0, ct, "casts");
 			return w;
 		}
@@ -674,9 +770,12 @@ namespace Ui
 			counts(cutY, cutT, "casts cut short");
 			return w;
 		}
+		// one boon skill's timing is no reason on its own: a build gives that boon from many skills, and what counts is
+		// the boon on the ally when it's needed (the user, 2026-10-01: Power Break "cast late" on a Troubadour, 0 of 1
+		// against 1 of 3). The boon's own measures say that (CC covered, stability that blocked CC, left over).
 		int k = TimingWindow(aMetric);
 		double inY = double(ry->Timing[k]) / cy, inT = ct ? double(rt->Timing[k]) / ct : 0.0;
-		if (ct >= 3 && inT - inY >= 0.25)
+		if (m.What != K_Boon && ct >= 3 && inT - inY >= 0.25)
 		{
 			w.Word = k == Analysis::T_AnsweringTheirs ? "off-beat" : k == Analysis::T_AheadOfTheirs ? "cast late" : "off the spike";
 			w.Sentence = "Same skill, different moment: " + aVsName + " cast " + std::to_string(rt->Timing[k]) + " of " +
@@ -858,19 +957,116 @@ namespace Ui
 			: "This log's recorder isn't in the squad.";
 	}
 
+	std::string RevivedBy(const Fight& f, const Down& d, int32_t* aSkill)
+	{
+		*aSkill = 0;
+		if (d.Died) { return ""; }
+		const Player& p = *d.P;
+		const int who = static_cast<int>(&p - f.Players.data());
+		auto name = [&](int32_t aId) { auto it = f.SkillNames.find(aId); return it == f.SkillNames.end() ? std::to_string(aId) : it->second; };
+		// an Illusion of Life on them as they got up
+		for (const auto& il : p.IllusionOfLife)
+		{
+			if (std::abs(il.From - d.S.To) <= 300 && il.By >= 0) { *aSkill = 10244; return f.Players[il.By].Name + ", Illusion of Life"; }
+		}
+		// plain revives running at the get-up (several players can revive one ally together)
+		std::string plain;
+		for (const Player& q : f.Players)
+		{
+			for (const auto& v : q.Reviving)
+			{
+				if (v.Target == who && v.From <= d.S.To && v.To >= d.S.To - 300) { plain += (plain.empty() ? "" : ", ") + q.Name; break; }
+			}
+		}
+		if (!plain.empty()) { *aSkill = 1066; return plain; }
+		// healing on them while downed as they got up, from the healer's Healing Stats: the revive skill's own pulse
+		// (Nature's Renewal from a Spirit of Nature, a Battle Standard, Signet of Mercy); the biggest one
+		const Player::DownHeal* pulse = nullptr;
+		for (const auto& h : p.DownHealsIn)
+		{
+			if (h.By >= 0 && h.By != who && std::abs(h.Ms - d.S.To) <= 400 && h.Amount >= 3000 && (!pulse || h.Amount > pulse->Amount)) { pulse = &h; }
+		}
+		if (pulse)
+		{
+			*aSkill = pulse->Skill == 12601 ? 12569 : pulse->Skill;
+			return f.Players[pulse->By].Name + ", " + (pulse->Skill == 12601 ? std::string("Spirit of Nature") : name(pulse->Skill));
+		}
+		// a revive skill completed in the 3 s before, by an ally who had them in reach (ReviveUse counted them down near);
+		// a Spirit of Nature also revives allies downed up to 1.5 s after it
+		for (const Player& q : f.Players)
+		{
+			if (&q == &p) { continue; }
+			for (const auto& u : q.ReviveUses)
+			{
+				const int32_t lag = u.Skill == 12569 ? 1500 : 0;
+				if (u.Done && u.DownNear > 0 && u.Skill != 10244 && u.Ms + lag >= d.S.From && u.Ms <= d.S.To && d.S.To <= u.Ms + 3000) { *aSkill = u.Skill; return q.Name + ", " + name(u.Skill); }
+			}
+		}
+		return "";
+	}
+
+	const Player::Point* NearestPos(const Player& p, int32_t aMs)
+	{
+		auto it = std::lower_bound(p.Pos.begin(), p.Pos.end(), aMs, [](const Player::Point& a, int32_t ms) { return a.Ms < ms; });
+		if (it == p.Pos.end()) { return p.Pos.empty() ? nullptr : &p.Pos.back(); }
+		if (it != p.Pos.begin() && aMs - (it - 1)->Ms < it->Ms - aMs) { --it; }
+		return std::abs(it->Ms - aMs) <= 2000 ? &*it : nullptr;
+	}
+
+	bool Rallied(const Fight& f, const Down& d)
+	{
+		if (d.Died) { return false; }
+		for (const auto& e : f.Enemies)
+		{
+			for (const auto& s : e.DownSpans) { if (s.Dead && std::abs(s.From - d.S.To) <= 100) { return true; } }
+		}
+		return false;
+	}
+
+	std::string GotUpHow(const Fight& f, const Down& d)
+	{
+		if (d.Died) { return ""; }
+		int32_t skill = 0;
+		std::string by = RevivedBy(f, d, &skill);
+		if (!by.empty()) { return "revived by " + by; }
+		if (Rallied(f, d)) { return "rallied: an enemy died at that moment"; }
+		return "how is unknown (no revive, revive skill or enemy death seen)";
+	}
+
+	namespace { uint64_t s_DataVersion = 0; }
+	uint64_t DataVersion() { return s_DataVersion; }
+	void SetDataVersion(uint64_t aVersion) { s_DataVersion = aVersion; }
+
 	bool HadBoonAt(const Player& p, int aBoon, int32_t aMs)
 	{
 		for (auto& [a, b] : p.BoonOn[aBoon]) { if (a <= aMs && b >= aMs) { return true; } }
 		return false;
 	}
 
+	namespace { std::unordered_map<ImGuiID, uint32_t> s_NumCols; } // table -> its columns that held numbers (a bit each)
+
+	// A number column's heading sits right, over its numbers (the user, 2026-10-01: headings at the left over numbers
+	// at the right looked disconnected). Which columns hold numbers is known from NumCell, a frame late.
 	void Headers(const std::vector<std::pair<const char*, const char*>>& aColumns)
 	{
+		ImGuiTable* table = ImGui::GetCurrentContext()->CurrentTable;
+		uint32_t nums = table ? s_NumCols[table->ID] : 0;
 		ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
 		for (int c = 0; c < static_cast<int>(aColumns.size()); c++)
 		{
 			ImGui::TableSetColumnIndex(c);
-			ImGui::TableHeader(aColumns[c].first);
+			if (c < 32 && (nums >> c & 1u))
+			{
+				ImGui::PushID(c);
+				ImGui::TableHeader("##num");
+				ImGui::PopID();
+				const char* label = aColumns[c].first;
+				ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+				float w = ImGui::CalcTextSize(label, nullptr, true).x;
+				ImGui::GetWindowDrawList()->AddText(ImVec2(b.x - table->CellPaddingX - w, a.y + ImGui::GetStyle().CellPadding.y), ImGui::GetColorU32(ImGuiCol_Text), label,
+					ImGui::FindRenderedTextEnd(label));
+			}
+			else { ImGui::TableHeader(aColumns[c].first); }
 			if (aColumns[c].second && ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", aColumns[c].second); }
 		}
 	}
@@ -886,6 +1082,7 @@ namespace Ui
 	void NumCell(const std::string& aText, const ImVec4* aColor)
 	{
 		ImGui::TableNextColumn();
+		if (ImGuiTable* table = ImGui::GetCurrentContext()->CurrentTable; table && table->CurrentColumn >= 0 && table->CurrentColumn < 32) { s_NumCols[table->ID] |= 1u << table->CurrentColumn; }
 		float width = ImGui::CalcTextSize(aText.c_str()).x;
 		float avail = ImGui::GetContentRegionAvail().x;
 		if (avail > width) { ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - width); }
@@ -930,6 +1127,27 @@ namespace Ui
 		ImGui::SameLine(0, 4);
 		ImGui::TextColored(kMuted, "%s", aLabel);
 		ImGui::SameLine(0, 12);
+	}
+
+	void ScopeSwitch(const char* aId, bool& aTonight, const char* aTip)
+	{
+		ImGui::PushID(aId);
+		float width = ImGui::CalcTextSize("This round").x + ImGui::CalcTextSize("Tonight").x + ImGui::GetStyle().FramePadding.x * 4 + 2;
+		ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowContentRegionMax().x - width));
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2, ImGui::GetStyle().ItemSpacing.y));
+		auto seg = [](const char* aLabel, bool aOn)
+		{
+			ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(aOn ? ImGuiCol_ButtonActive : ImGuiCol_FrameBg));
+			bool clicked = ImGui::SmallButton(aLabel);
+			ImGui::PopStyleColor();
+			return clicked;
+		};
+		if (seg("This round", !aTonight)) { aTonight = false; }
+		ImGui::SameLine();
+		if (seg("Tonight", aTonight)) { aTonight = true; }
+		if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", aTip); }
+		ImGui::PopStyleVar();
+		ImGui::PopID();
 	}
 
 	void Answer(const std::string& aText)
@@ -986,7 +1204,7 @@ namespace Ui
 		ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit;
 		if (ImGui::BeginTable("detail", 6, flags))
 		{
-			std::string head = m.Name + " " + RateUnit(m);
+			std::string head = WithUnit(m.Name, RateUnit(m, c.You));
 			ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 170);
 			ImGui::TableSetupColumn(head.c_str(), ImGuiTableColumnFlags_WidthFixed, 200);
 			for (int i = 0; i < 4; i++) { ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 80); }

@@ -15,6 +15,10 @@ namespace Ui
 	extern bool ShowMini;    // the small summary window of the latest round
 
 	void LoadSettings(const std::filesystem::path& aFile); // settings.txt in the addon folder; saved on change
+	void SetArcdpsIni(const std::filesystem::path& aFile); // read (never written) to explain an empty window
+	// Where the game is, each frame before Render: nothing is drawn outside gameplay (loading screens), and the
+	// summary window also hides while the world map is open
+	void SetGameState(bool aGameplay, bool aMapOpen);
 	void Render();  // the window, if shown
 	void Options(); // Nexus options page
 

@@ -17,7 +17,13 @@ namespace Session
 		std::vector<FightPtr> Fights; // oldest first
 		std::string           Status; // one line: what the worker is doing or last went wrong
 		std::filesystem::path Folder;
+		uint64_t              Version = 0;   // goes up whenever Fights changes: the key of every per-round cache
+		bool                  Loading = true; // the logs on disk at start aren't all read yet
 	};
+
+	// A path as UTF-8 text, for the screen and the log; never throws (path::string() throws on characters outside
+	// the Windows ANSI code page, a Polish or Cyrillic folder name on a Western Windows)
+	std::string PathText(const std::filesystem::path& aPath);
 
 	// At start the last play session loads: the newest log and every one before it back to a break of
 	// aSessionGapHours or more between two logs. New logs load as they are written.

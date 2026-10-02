@@ -35,6 +35,7 @@ namespace SkillIcons
 		std::unordered_map<int32_t, void*> s_Textures;   // render thread only
 
 #include "SkillIconData.inc"
+#include "TraitBoons.inc"
 
 		// Elite Insights' icon for a skill: by id, else by name ("Relic of Karakosa" -> "relicofkarakosa")
 		const char* KnownUrl(int32_t aSkill, const std::string& aName)
@@ -42,6 +43,11 @@ namespace SkillIcons
 			static const std::unordered_map<int32_t, const char*> byId(std::begin(kIconById), std::end(kIconById));
 			static const std::unordered_map<std::string, const char*> byName(std::begin(kIconByName), std::end(kIconByName));
 			if (auto it = byId.find(aSkill); it != byId.end()) { return it->second; }
+			// a trait's row (Analysis::kTraitBase - its id): the trait's icon
+			if (aSkill <= -100000)
+			{
+				for (const TraitBoon& t : kTraitBoons) { if (-100000 - t.Trait == aSkill) { return t.Icon; } }
+			}
 			std::string key;
 			for (char c : aName) { if (std::isalnum(static_cast<unsigned char>(c))) { key += static_cast<char>(std::tolower(static_cast<unsigned char>(c))); } }
 			if (auto it = byName.find(key); it != byName.end()) { return it->second; }
@@ -194,6 +200,11 @@ namespace SkillIcons
 		double now = ImGui::GetTime();
 		if (auto it = asked.find(aSkill); it != asked.end() && now - it->second < 1.0) { return nullptr; }
 		asked[aSkill] = now;
+		// The icon of another id with the same name, for ids the API has none for (a Spellbreaker's Rend is 80224 and
+		// 80247; the API knows only 80247: the user, 2026-10-01)
+		static std::unordered_map<std::string, std::string> byName;
+		std::string key;
+		for (char c : aName) { if (std::isalnum(static_cast<unsigned char>(c))) { key += static_cast<char>(std::tolower(static_cast<unsigned char>(c))); } }
 		std::string url;
 		if (const char* known = KnownUrl(aSkill, aName)) { url = known; }
 		else if (aSkill > 0)
@@ -203,6 +214,8 @@ namespace SkillIcons
 			if (it == s_Urls.end()) { s_Wanted.insert(aSkill); s_Wake.notify_all(); return nullptr; }
 			url = it->second;
 		}
+		if (!url.empty() && !key.empty()) { byName.emplace(key, url); }
+		else if (auto it = byName.find(key); url.empty() && it != byName.end()) { url = it->second; }
 		// "https://host/path" -> remote "https://host", endpoint "/path" (render.guildwars2.com or the wiki)
 		size_t scheme = url.find("://");
 		size_t slash = scheme == std::string::npos ? std::string::npos : url.find('/', scheme + 3);

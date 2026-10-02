@@ -3,6 +3,7 @@
 // and the same events as sentences, in order. Below, the revive skills used against the revive order.
 #include <algorithm>
 #include <cctype>
+#include <cfloat>
 #include <cmath>
 #include <map>
 #include <set>
@@ -25,10 +26,11 @@ namespace Ui
 		// The clock's end: 2 s after the down, or on to when they got up or died (1 s after), 12 s at most
 		int32_t EndOf(const Down& d) { return std::max(d.S.From + kAfter, std::min(d.S.To + 1000, d.S.From + kLongest)); }
 
-		// The Illusion of Life that ended with this down (they went back down when it ran out), else null
+		// The Illusion of Life that ran out with this down (they went back down when its 15 s ended), else null. One that
+		// ended early with a down was ended by the down: damage while on it (19 of 57 on 22 to 25 Sept), not the cause.
 		const Player::Illusion* IllusionEnded(const Down& d)
 		{
-			for (const auto& il : d.P->IllusionOfLife) { if (std::abs(il.To - d.S.From) <= 100) { return &il; } }
+			for (const auto& il : d.P->IllusionOfLife) { if (il.RanOut && std::abs(il.To - d.S.From) <= 100) { return &il; } }
 			return nullptr;
 		}
 
@@ -78,7 +80,35 @@ namespace Ui
 			std::vector<Event> Events;
 			std::string DodgeLine;
 			std::string BurstLabel;    // on the burst's box: "24.3k to health in 2.0 s"
+			int32_t BurstEnd = 0;      // its last hit (ms)
+			// How they went down, in a few steps (the user, 2026-09-30: what killed them, before the second by second):
+			// worn down, stability lost, CC, the burst, how it ended. Icon: a skill, else a CC type or a boon struck through.
+			struct Step { int32_t Ms = 0; int32_t Skill = 0; int Cc = -1; int Boon = -1; ImU32 Frame = 0; std::string Value, Word, Extra; };
+			std::vector<Step> Steps;
+			// The enemy skills of the 6 s before the down, most damage first
+			struct Top { int32_t Skill = 0; std::string Spec; int Hits = 0; double Damage = 0; };
+			std::vector<Top> Tops;
+			double TopTotal = 0;
+			int TopEnemies = 0;
 		};
+
+		// An enemy skill's damage in a window on one player, biggest first: "Arcing Slice 9.8k, Meteor Shower 6.1k"
+		std::vector<std::pair<int32_t, double>> SkillsIn(const Player& p, int32_t aFrom, int32_t aTo, bool aHealthOnly)
+		{
+			std::map<int32_t, double> by;
+			for (const auto& h : p.HitsIn) { if (h.Ms >= aFrom && h.Ms <= aTo) { by[h.Skill] += aHealthOnly ? h.Damage - h.Barrier : h.Damage; } }
+			std::vector<std::pair<int32_t, double>> out(by.begin(), by.end());
+			std::sort(out.begin(), out.end(), [](auto& a, auto& b) { return a.second > b.second; });
+			return out;
+		}
+
+		std::string TwoSkills(const Fight& f, const std::vector<std::pair<int32_t, double>>& aList)
+		{
+			std::string s;
+			for (size_t i = 0; i < aList.size() && i < 2; i++) { if (aList[i].second > 0) { s += (s.empty() ? "" : ", ") + SkillName(f, aList[i].first) + " " + Num(aList[i].second); } }
+			return s;
+		}
+
 
 		Detail Explain(const Fight& f, const Down& d)
 		{
@@ -118,6 +148,7 @@ namespace Ui
 				for (const auto& g : q.StabGives)
 				{
 					if (!in(g.Ms)) { continue; }
+					if (g.SelfOnly && &q != &p) { continue; } // the caster's own stability: never theirs to miss
 					bool reached = std::find(g.Targets.begin(), g.Targets.end(), idx) != g.Targets.end();
 					int group = 0, groupReached = 0;
 					for (const Player& m : f.Players)
@@ -185,6 +216,24 @@ namespace Ui
 				for (const auto& b : p.HitsIn) { if (b.Ms >= a.Ms && b.Ms <= a.Ms + 2000 && b.Ms <= t) { sum += b.Damage - b.Barrier; shield += b.Barrier; } }
 				if (sum > best) { best = sum; bestBarrier = shield; bestAt = a.Ms; }
 			}
+			// The burst from where it really starts: the last hit from which 90% of it is still to come (the window began at
+			// its first small hit: "23.1k in 1.99 s" when nearly all of it came in the last 0.2 s; the user, 2026-09-30)
+			int32_t burstEnd = bestAt;
+			if (best > 0)
+			{
+				std::vector<std::pair<int32_t, double>> burstHits;
+				for (const auto& b : p.HitsIn) { if (b.Ms >= bestAt && b.Ms <= bestAt + 2000 && b.Ms <= t) { burstHits.push_back({b.Ms, double(b.Damage - b.Barrier)}); } }
+				std::sort(burstHits.begin(), burstHits.end());
+				double rest = best;
+				for (auto& [ms, dmg] : burstHits)
+				{
+					if (rest - dmg < 0.9 * best) { bestAt = ms; break; }
+					rest -= dmg;
+				}
+				for (auto& [ms, dmg] : burstHits) { if (dmg > 0) { burstEnd = ms; } }
+				best = 0;
+				for (auto& [ms, dmg] : burstHits) { if (ms >= bestAt) { best += dmg; } }
+			}
 			int32_t full = -1;
 			for (auto& [ms, hp] : p.Hp) { if (ms > t) { break; } if (hp >= 9000) { full = ms; } }
 			std::string topSpec;
@@ -193,8 +242,9 @@ namespace Ui
 			{
 				Event e;
 				e.Ms = bestAt; e.Rail = 2; e.What = Event::E_Burst;
-				out.BurstLabel = Num(best) + " to health in " + Num(std::max(100, std::min(bestAt + 2000, t) - bestAt) / 1000.0) + " s";
-				e.Text = Num(best) + " damage to health from here to " + Rel(std::min(bestAt + 2000, t) - t) + (bestBarrier > 0 ? " (and " + Num(bestBarrier) + " into barrier)" : "") +
+				out.BurstLabel = Num(best) + " to health in " + Num(std::max(100, burstEnd - bestAt) / 1000.0) + " s";
+				out.BurstEnd = burstEnd;
+				e.Text = Num(best) + " damage to health from here to " + Rel(burstEnd - t) + (bestBarrier > 0 ? " (and " + Num(bestBarrier) + " into barrier)" : "") +
 					(topSpec.empty() ? "" : "; most of the 6 s from " + topSpec + "s (" + std::to_string(int(100 * bySpec[topSpec] / std::max(1.0, total) + 0.5)) + "%)") +
 					(full >= 0 && t - full <= 6000 ? "; from 90% health to down in " + Num((t - full) / 1000.0) + " s." : ".");
 				out.Events.push_back(e);
@@ -210,6 +260,8 @@ namespace Ui
 				out.Events.push_back(e);
 			}
 			// Revives: plain revives by others and revive skills that went off while they were down
+			int32_t revSkill = 0;
+			const std::string revBy = d.Died ? std::string() : RevivedBy(f, d, &revSkill);
 			for (const Player& q : f.Players)
 			{
 				if (&q == &p) { continue; }
@@ -221,12 +273,30 @@ namespace Ui
 					e.Text = q.Name + " revived them for " + Num((std::min(v.To, d.S.To) - e.Ms) / 1000.0) + " s.";
 					out.Events.push_back(e);
 				}
+				// every revive skill near them while they were down, also the ones that didn't get them up (the user,
+				// 2026-10-01); a Spirit of Nature revives about 0.9 s after its cast, so one just before the down counts
 				for (const auto& u : q.ReviveUses)
 				{
-					if (!u.GotUp || u.Ms < d.S.From || u.Ms > d.S.To + 100 || d.S.To > u.Ms + 3000) { continue; }
+					const int32_t lag = u.Skill == 12569 ? 1500 : 0;
+					if (u.Ms + lag < d.S.From || u.Ms > d.S.To + 100) { continue; }
+					const Player::Point* a = NearestPos(p, u.Ms);
+					const Player::Point* b = NearestPos(q, u.Ms);
+					if (!a || !b || std::hypot(a->X - b->X, a->Y - b->Y) > 1500) { continue; }
 					Event e;
 					e.Ms = u.Ms; e.Rail = 1; e.What = Event::E_Revive; e.Skill = u.Skill;
-					e.Text = q.Name + " used " + SkillName(f, u.Skill) + ".";
+					bool upByIt = revSkill == u.Skill && revBy.rfind(q.Name + ",", 0) == 0;
+					e.Good = upByIt;
+					if (!u.Done)
+					{
+						const char* why = u.Stop == 8 ? "interrupted" : u.Stop == 9 ? "the caster died" : u.Stop == 10 ? "the caster was downed" : u.Stop == 11 ? "the caster was crowd controlled" : "cancelled";
+						e.Text = q.Name + " started " + SkillName(f, u.Skill) + ", but it was cut short (" + why + ").";
+					}
+					else if (upByIt) { e.Text = q.Name + " used " + SkillName(f, u.Skill) + ": it got them up."; }
+					else
+					{
+						e.Text = q.Name + " used " + SkillName(f, u.Skill) + (u.Ms < d.S.From ? " just before the down" : "") + ": it didn't get them up" +
+							(d.Died ? "; they died." : revBy.empty() ? "." : " (" + revBy + " did).");
+					}
 					out.Events.push_back(e);
 				}
 			}
@@ -248,21 +318,9 @@ namespace Ui
 			{
 				Event e;
 				e.Ms = t; e.Rail = 2; e.What = Event::E_Down;
-				std::string by;
-				if (!d.Died)
-				{
-					for (const Player& q : f.Players)
-					{
-						bool helped = false;
-						for (auto& v : q.Reviving) { helped |= &f.Players[v.Target] == &p && v.From <= d.S.To && v.To >= d.S.From; }
-						std::string skill;
-						for (auto& u : q.ReviveUses) { if (&q != &p && u.GotUp && u.Ms >= d.S.From && u.Ms <= d.S.To && d.S.To <= u.Ms + 3000) { skill = SkillName(f, u.Skill); } }
-						if (helped || !skill.empty()) { by += (by.empty() ? "" : ", ") + q.Name + (skill.empty() ? "" : " (" + skill + ")"); }
-					}
-				}
 				int32_t ms = d.S.To - d.S.From;
-				e.Text = std::string("Down. ") + (d.Died ? "Died after " + Num(ms / 1000.0) + " s." : ms < 500 ? "Got up at once." : "Got up after " + Num(ms / 1000.0) + " s") +
-					(by.empty() ? (d.Died ? "" : ".") : ", revived by " + by + ".");
+				// how they got up: revived by whom, a rally, or unknown (the user, 2026-10-01: "it just says they got up")
+				e.Text = std::string("Down. ") + (d.Died ? "Died after " + Num(ms / 1000.0) + " s." : (ms < 500 ? "Got up at once: " : "Got up after " + Num(ms / 1000.0) + " s: ") + GotUpHow(f, d) + ".");
 				out.Events.push_back(e);
 			}
 			std::stable_sort(out.Events.begin(), out.Events.end(), [](const Event& a, const Event& b) { return a.Ms < b.Ms; });
@@ -279,7 +337,186 @@ namespace Ui
 					"Illusion of Life " + (il->RanOut ? "ran out" : "ended") + ", not from damage (" + hit + ").";
 			}
 			else { out.Verdict = p.Name + (p.Pov ? " (you)" : "") + " went down at " + Duration(t) + ": " + hit + after + "."; }
+
+			// How they went down, step by step
+			using Step = Detail::Step;
+			if (best > 0 && !il)
+			{
+				// worn down: the health damage before the burst, when it was a fifth of the 6 s or more
+				double before = 0;
+				for (const auto& h : p.HitsIn) { if (h.Ms >= from && h.Ms < bestAt) { before += h.Damage - h.Barrier; } }
+				if (before >= 0.2 * (before + best))
+				{
+					Step s;
+					s.Ms = from;
+					auto list = SkillsIn(p, from, bestAt - 1, true);
+					s.Skill = list.empty() ? 0 : list[0].first;
+					s.Frame = kEnemy;
+					// damage, not health: ArcDPS writes health only now and then, so the bar at the burst's start is often stale
+					s.Value = Num(before);
+					s.Word = "worn down, " + Rel(from - t) + " to " + Rel(bestAt - t);
+					s.Extra = TwoSkills(f, list);
+					out.Steps.push_back(s);
+				}
+			}
+			// stability: the last time it was taken in the 6 s, else none on at the down
+			{
+				const Player::StripHit* last = nullptr;
+				for (const auto& st : p.StripsIn) { if (st.Boon == Analysis::kStability && st.Ms >= from && st.Ms <= t) { last = &st; } }
+				if (last)
+				{
+					Step s;
+					s.Ms = last->Ms; s.Boon = Analysis::kStability;
+					s.Value = Rel(last->Ms - t);
+					s.Word = std::string("stability ") + (last->Corrupted ? "corrupted" : "stripped");
+					int32_t sk = SkillWith(p, last->Ms, last->Enemy);
+					s.Extra = (last->Enemy >= 0 ? f.Enemies[last->Enemy].Spec : std::string("an enemy")) + (sk ? ", " + SkillName(f, sk) : std::string());
+					out.Steps.push_back(s);
+				}
+				else if (!HadBoonAt(p, Analysis::kStability, t - 200))
+				{
+					Step s;
+					s.Ms = t - 1; s.Skill = -200 - Analysis::kStability; s.Frame = kPeer;
+					s.Value = "none";
+					s.Word = "no stability at the down";
+					out.Steps.push_back(s);
+				}
+			}
+			// the last CC in the 3 s before
+			{
+				const Player::CcHit* last = nullptr;
+				for (const auto& h : p.CcIn) { if (h.Ms >= t - 3000 && h.Ms <= t) { last = &h; } }
+				if (last)
+				{
+					Step s;
+					s.Ms = last->Ms; s.Cc = last->Kind;
+					s.Value = Rel(last->Ms - t);
+					s.Word = std::string(Analysis::kCcVerbs[last->Kind]) + (HadBoonAt(p, Analysis::kStability, last->Ms - 50) ? ", stability on" : ", no stability");
+					int32_t sk = SkillWith(p, last->Ms, last->Enemy);
+					s.Extra = (last->Enemy >= 0 ? f.Enemies[last->Enemy].Spec : std::string("an NPC or siege")) + (sk ? ", " + SkillName(f, sk) : std::string());
+					out.Steps.push_back(s);
+				}
+			}
+			if (best > 0)
+			{
+				Step s;
+				s.Ms = bestAt; s.Skill = -303; s.Frame = kEnemy;
+				s.Value = Num(best);
+				s.Word = "burst in " + Num(std::max(100, burstEnd - bestAt) / 1000.0) + " s, to health";
+				s.Extra = TwoSkills(f, SkillsIn(p, bestAt, burstEnd, true));
+				out.Steps.push_back(s);
+			}
+			std::stable_sort(out.Steps.begin(), out.Steps.end(), [](const Step& a, const Step& b) { return a.Ms < b.Ms; });
+			{
+				Step s;
+				s.Ms = t;
+				int32_t ms = d.S.To - d.S.From;
+				if (d.Died) { s.Skill = -301; s.Frame = kEnemy; s.Value = "+" + Num(ms / 1000.0) + " s"; s.Word = "died"; }
+				else
+				{
+					int32_t skill = 0;
+					std::string by = RevivedBy(f, d, &skill);
+					bool rally = by.empty() && Rallied(f, d);
+					s.Skill = -302; s.Frame = kYou; s.Value = "+" + Num(ms / 1000.0) + " s"; s.Word = !by.empty() ? "revived" : rally ? "rallied" : "got up";
+					s.Extra = !by.empty() ? by : rally ? "an enemy died" : "how is unknown"; // "Tam Vey, Illusion of Life": RevivedBy names the skill
+				}
+				out.Steps.push_back(s);
+			}
+			// The top enemy skills of the 6 s
+			{
+				std::map<int32_t, Detail::Top> by;
+				std::map<int32_t, std::map<std::string, double>> specs;
+				std::set<int> hitters2;
+				for (const auto& h : p.HitsIn)
+				{
+					if (h.Ms < from || h.Ms > t) { continue; }
+					auto& x = by[h.Skill];
+					x.Skill = h.Skill; x.Hits++; x.Damage += h.Damage;
+					out.TopTotal += h.Damage;
+					if (h.Enemy >= 0) { specs[h.Skill][f.Enemies[h.Enemy].Spec] += h.Damage; hitters2.insert(h.Enemy); }
+				}
+				out.TopEnemies = static_cast<int>(hitters2.size());
+				for (auto& [sk, x] : by)
+				{
+					double most = 0;
+					for (auto& [sp, v] : specs[sk]) { if (v > most) { most = v; x.Spec = sp; } }
+					if (x.Spec.empty()) { x.Spec = "NPC or siege"; }
+					out.Tops.push_back(x);
+				}
+				std::sort(out.Tops.begin(), out.Tops.end(), [](const Detail::Top& a, const Detail::Top& b) { return a.Damage > b.Damage; });
+			}
 			return out;
+		}
+
+		// The steps as tiles in a row, joined by arrows: an icon and the value, a muted word, a line in ink
+		void Steps(const Fight& f, const Detail& det)
+		{
+			if (det.Steps.empty()) { return; }
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			const float lh = ImGui::GetTextLineHeight(), small = ImGui::GetFontSize() * 0.85f, arrow = 14, pad = 6;
+			const float avail = ImGui::GetContentRegionAvail().x;
+			const int n = static_cast<int>(det.Steps.size());
+			const float w = std::min(200.0f, (avail - arrow * (n - 1)) / n);
+			// the tallest tile sets the row: the value line, then the wrapped word and extra
+			auto wrapped = [&](const std::string& s) { return s.empty() ? 0.0f : ImGui::GetFont()->CalcTextSizeA(small, FLT_MAX, w - pad * 2, s.c_str()).y; };
+			float h = 0;
+			for (const auto& s : det.Steps) { h = std::max(h, pad + lh + 2 + wrapped(s.Word) + wrapped(s.Extra) + pad); }
+			ImVec2 o = ImGui::GetCursorScreenPos();
+			ImU32 ink = ImGui::GetColorU32(ImGuiCol_Text), muted = ImGui::GetColorU32(kMuted);
+			for (int i = 0; i < n; i++)
+			{
+				const auto& s = det.Steps[i];
+				ImVec2 p(o.x + i * (w + arrow), o.y);
+				dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), IM_COL32(0x1b, 0x1d, 0x22, 255));
+				ImVec2 ic(p.x + pad, p.y + pad);
+				if (s.Cc >= 0) { CcIconAt(dl, ic, lh, static_cast<Analysis::CcKind>(s.Cc)); }
+				else if (s.Boon >= 0) { BoonIconAt(dl, ic, lh, s.Boon, true); }
+				else if (s.Skill) { IconAt(dl, ic, lh, s.Skill, s.Skill > 0 ? SkillName(f, s.Skill) : s.Word, s.Frame); }
+				dl->AddText(ImVec2(ic.x + lh + 6, ic.y), ink, s.Value.c_str());
+				float y = ic.y + lh + 2;
+				dl->AddText(ImGui::GetFont(), small, ImVec2(p.x + pad, y), muted, s.Word.c_str(), nullptr, w - pad * 2);
+				y += wrapped(s.Word);
+				dl->AddText(ImGui::GetFont(), small, ImVec2(p.x + pad, y), ink, s.Extra.c_str(), nullptr, w - pad * 2);
+				if (i + 1 < n) { dl->AddText(ImVec2(p.x + w + 3, p.y + h * 0.5f - lh * 0.5f), muted, ">"); }
+			}
+			ImGui::Dummy(ImVec2(avail, h));
+		}
+
+		// The top enemy skills of the 6 s: icon, skill, the enemy spec that used it most, hits, damage, share as a bar
+		void TopSkills(const Fight& f, const Detail& det)
+		{
+			if (det.Tops.empty()) { return; }
+			ImGui::TextColored(kMuted, "Top skills, 6 s before the down");
+			ImGui::SameLine(0, 12);
+			ImGui::TextColored(kMuted, "%s from %d %s; bar: share of it", Num(det.TopTotal).c_str(), det.TopEnemies, det.TopEnemies == 1 ? "enemy" : "enemies");
+			if (!ImGui::BeginTable("topskills", 5, ImGuiTableFlags_SizingFixedFit)) { return; }
+			ImGui::TableSetupColumn("Skill", ImGuiTableColumnFlags_WidthFixed, 210);
+			ImGui::TableSetupColumn("Enemy", ImGuiTableColumnFlags_WidthFixed, 120);
+			ImGui::TableSetupColumn("Hits", ImGuiTableColumnFlags_WidthFixed, 40);
+			ImGui::TableSetupColumn("Damage", ImGuiTableColumnFlags_WidthFixed, 60);
+			ImGui::TableSetupColumn("Share", ImGuiTableColumnFlags_WidthStretch);
+			Headers({{"Skill", nullptr}, {"Enemy", "Who used it most"}, {"Hits", nullptr}, {"Damage", "Health and barrier"}, {"Share", "Of the 6 s"}});
+			double rest = 0;
+			for (size_t i = 0; i < det.Tops.size(); i++)
+			{
+				const auto& x = det.Tops[i];
+				if (i >= 6) { rest += x.Damage; continue; }
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				std::string name = SkillName(f, x.Skill);
+				SkillIcon(x.Skill, name);
+				ImGui::TextUnformatted(name.c_str());
+				Cell(x.Spec, &kMuted);
+				NumCell(std::to_string(x.Hits));
+				NumCell(Num(x.Damage));
+				ImGui::TableNextColumn();
+				ImVec2 p = ImGui::GetCursorScreenPos();
+				float bw = static_cast<float>(x.Damage / std::max(1.0, det.TopTotal)) * ImGui::GetContentRegionAvail().x;
+				Rect(ImGui::GetWindowDrawList(), ImVec2(p.x, p.y + ImGui::GetTextLineHeight() * 0.3f), std::max(2.0f, bw), ImGui::GetTextLineHeight() * 0.4f, kEnemy);
+				ImGui::Dummy(ImVec2(1, ImGui::GetTextLineHeight()));
+			}
+			ImGui::EndTable();
+			if (rest > 0) { ImGui::TextColored(kMuted, "and %s from %d more skills", Num(rest).c_str(), static_cast<int>(det.Tops.size()) - 6); }
 		}
 
 		void EventIcon(ImDrawList* dl, ImVec2 p, float aSize, const Fight& f, const Event& e)
@@ -297,7 +534,7 @@ namespace Ui
 			case Event::E_Burst: IconAt(dl, p, aSize, -303, "Damage burst", kEnemy); break;
 			case Event::E_Down: IconAt(dl, p, aSize, -301, "Downed", kEnemy); break;
 			case Event::E_Illusion: IconAt(dl, p, aSize, e.Skill, "Illusion of Life", kPeer); break;
-			case Event::E_Revive: IconAt(dl, p, aSize, e.Skill == 1066 ? -302 : e.Skill, e.Skill == 1066 ? std::string("Resurrect") : SkillName(f, e.Skill), kYou); break;
+			case Event::E_Revive: IconAt(dl, p, aSize, e.Skill == 1066 ? -302 : e.Skill, e.Skill == 1066 ? std::string("Resurrect") : SkillName(f, e.Skill), e.Good ? kYou : kPeer); break; // grey: it didn't get them up
 			case Event::E_Up: IconAt(dl, p, aSize, -302, "Resurrect", kYou); break;
 			case Event::E_Dead:
 				dl->AddLine(ImVec2(p.x + 3, p.y + 3), ImVec2(p.x + aSize - 3, p.y + aSize - 3), kEnemy, 2);
@@ -367,7 +604,7 @@ namespace Ui
 			for (const Event& e : det.Events)
 			{
 				if (e.What != Event::E_Burst) { continue; }
-				float a = x(e.Ms), b = x(std::min(e.Ms + 2000, t));
+				float a = x(e.Ms), b = x(std::max(det.BurstEnd, e.Ms + 100));
 				dl->AddRectFilled(ImVec2(a, mainY), ImVec2(b, mainY + mainH), IM_COL32(217, 89, 38, 26));
 				Dashed(dl, a, mainY, mainY + mainH, kEnemy);
 				Dashed(dl, b, mainY, mainY + mainH, kEnemy);
@@ -414,17 +651,34 @@ namespace Ui
 				return hp;
 			};
 			{
+				// ArcDPS writes health only now and then, so the last value before a down is often still high: the line drops
+				// to 0 at the down. While downed the game shows the downed bar (its own health pool, 75% when the user asked):
+				// drawn thin and grey so it doesn't read as health left (the user, 2026-09-30).
 				int32_t last = -1;
 				for (auto& [ms, hp] : p.Hp) { if (ms <= from) { last = hp; } }
 				ImVec2 prev(x(from), last >= 0 ? hpY(last) : -1);
+				auto downed = [&](int32_t ms) { return ms >= t && ms < d.S.To; };
+				bool dropped = false;
+				auto drop = [&]
+				{
+					if (dropped || prev.y < 0) { return; }
+					dl->AddLine(prev, ImVec2(x(t), prev.y), ink, 2);
+					dl->AddLine(ImVec2(x(t), prev.y), ImVec2(x(t), hpY(0)), ink, 2);
+					prev = ImVec2(x(t), hpY(0));
+					dropped = true;
+				};
 				for (auto& [ms, hp] : p.Hp)
 				{
 					if (ms <= from || ms > to) { continue; }
+					if (ms >= t) { drop(); }
 					ImVec2 pt(x(ms), hpY(hp));
-					if (prev.y >= 0) { dl->AddLine(prev, ImVec2(pt.x, prev.y), ink, 2); dl->AddLine(ImVec2(pt.x, prev.y), pt, ink, 2); }
+					ImU32 col = downed(ms) ? muted : ink;
+					float thick = downed(ms) ? 1.0f : 2.0f;
+					if (prev.y >= 0) { dl->AddLine(prev, ImVec2(pt.x, prev.y), col, thick); dl->AddLine(ImVec2(pt.x, prev.y), pt, col, thick); }
 					prev = pt;
 				}
-				if (prev.y >= 0) { dl->AddLine(prev, ImVec2(x(to), prev.y), ink, 2); }
+				if (to >= t) { drop(); }
+				if (prev.y >= 0) { dl->AddLine(prev, ImVec2(x(to), prev.y), downed(to - 1) ? muted : ink, downed(to - 1) ? 1.0f : 2.0f); }
 				SmallText(dl, ImVec2(o.x, hpY(10000) - lh * 0.5f), muted, "100% health");
 				SmallText(dl, ImVec2(o.x, mainY + mainH - lh), muted, "damage /1/4 s");
 			}
@@ -497,7 +751,10 @@ namespace Ui
 				}
 			}
 			// the down, and the time axis
-			dl->AddLine(ImVec2(x(t), g.y), ImVec2(x(t), mainY + mainH), ink, 1.5f);
+			// the down: a bright line on a dark edge, so it stays visible over bars and shading (the user, 2026-09-26: it
+			// got lost)
+			dl->AddLine(ImVec2(x(t), g.y), ImVec2(x(t), mainY + mainH), IM_COL32(0x10, 0x11, 0x14, 255), 5.0f);
+			dl->AddLine(ImVec2(x(t), g.y), ImVec2(x(t), mainY + mainH), ink, 2.0f);
 			float lastLabel = -1e9f;
 			for (int sec = -6; sec <= (to - t) / 1000; sec++)
 			{
@@ -526,7 +783,15 @@ namespace Ui
 					std::string shield = h->Barrier > 0 ? " (" + Num(h->Barrier) + " into barrier)" : std::string();
 					ImGui::Text("%s%s %s%s", Num(h->Damage).c_str(), shield.c_str(), SkillName(f, h->Skill).c_str(), h->Enemy >= 0 ? (" (" + f.Enemies[h->Enemy].Spec + ")").c_str() : "");
 				}
-				for (const Event& e : det.Events) { if (std::abs(e.Ms - at) <= 250 && e.What != Event::E_Burst) { ImGui::TextUnformatted(e.Text.c_str()); } }
+				// each event with its icon, as on the clock (the user, 2026-10-01: the boons lost and heals were text only)
+				for (const Event& e : det.Events)
+				{
+					if (std::abs(e.Ms - at) > 250 || e.What == Event::E_Burst) { continue; }
+					EventIcon(ImGui::GetWindowDrawList(), ImGui::GetCursorScreenPos(), lh, f, e);
+					ImGui::Dummy(ImVec2(lh, lh));
+					ImGui::SameLine(0, 4);
+					ImGui::TextUnformatted(e.Text.c_str());
+				}
 				ImGui::EndTooltip();
 			}
 			ImGui::SetCursorScreenPos(ImVec2(o.x, mainY + mainH + lh + 4));
@@ -546,7 +811,7 @@ namespace Ui
 			item([&](ImVec2 q) { IconAt(dl, q, lh, -200 - Analysis::kStability, "Stability", kYou); }, "stability given (grey frame: missed them)");
 			item([&](ImVec2 q) { IconAt(dl, q, lh, -300, "Healing", kYou); }, "healed");
 			item([&](ImVec2 q) { IconAt(dl, q, lh, 23275, "Dodge", kYou); }, "dodged (top edge)");
-			item([&](ImVec2 q) { IconAt(dl, q, lh, -302, "Resurrect", kYou); }, "revived, up again");
+			item([&](ImVec2 q) { IconAt(dl, q, lh, -302, "Resurrect", kYou); }, "revived, up again (grey frame: a revive skill that didn't get them up)");
 			item([&](ImVec2 q) { dl->AddRectFilled(ImVec2(q.x + 2, q.y + 2), ImVec2(q.x + lh - 2, q.y + lh), kEnemy); }, "damage to health");
 			item([&](ImVec2 q) { dl->AddRectFilled(ImVec2(q.x + 2, q.y + 2), ImVec2(q.x + lh - 2, q.y + lh), IM_COL32(217, 89, 38, 110)); }, "into barrier");
 			item([&](ImVec2 q) { Dashed(dl, q.x + 2, q.y + 1, q.y + lh, kEnemy); Dashed(dl, q.x + lh - 2, q.y + 1, q.y + lh, kEnemy); }, "the burst");
@@ -581,14 +846,16 @@ namespace Ui
 				std::string sg = "Sg " + std::to_string(c.MeRaw->Subgroup);
 				if (seg(sg.c_str(), s.DeathFilter == 2)) { s.DeathFilter = 2; s.DeathKey.clear(); }
 			}
+			// the revive skills and the revive order get the right side (the user, 2026-09-26: at the bottom they were hidden)
+			ImGui::SameLine(0, 8);
+			if (seg("Revives", s.DeathFilter == 3)) { s.DeathFilter = 3; }
 			ImGui::PopStyleVar();
 			// groups in time order: each enemy spike's downs, and the downs between spikes (the user, 2026-09-25: a down
 			// outside a spike belongs where it happened, not at the bottom). Key -1: outside a spike.
 			std::vector<std::pair<int64_t, std::vector<const Down*>>> groups;
 			for (const Down& d : aDowns)
 			{
-				int64_t spike = -1;
-				for (int64_t t : f.TheirSpikesMs) { if (d.S.From >= t - 1000 && d.S.From <= t + 4000) { spike = t; break; } }
+				int64_t spike = SpikeOf(f.TheirSpikesMs, d.S.From);
 				if (groups.empty() || groups.back().first != spike) { groups.push_back({spike, {}}); }
 				groups.back().second.push_back(&d);
 			}
@@ -600,7 +867,7 @@ namespace Ui
 					std::string key = DownKey(f, *d);
 					ImGui::PushID(key.c_str());
 					ImVec2 p = ImGui::GetCursorScreenPos();
-					if (ImGui::Selectable("##d", key == aShown, 0, ImVec2(0, lh))) { s.DeathKey = key; }
+					if (ImGui::Selectable("##d", key == aShown, 0, ImVec2(0, lh))) { s.DeathKey = key; if (s.DeathFilter == 3) { s.DeathFilter = 0; } }
 					ImDrawList* dl = ImGui::GetWindowDrawList();
 					dl->AddText(p, ImGui::GetColorU32(kMuted), Duration(d->S.From).c_str());
 					// got up: a blue circle; died: an orange cross (the word is in the detail)
@@ -648,26 +915,34 @@ namespace Ui
 		// The down shown: the one picked, else the first of the enemy spike opened from Round, else yours, else the first
 		const Down* shown = nullptr;
 		for (const Down& d : downs) { if (DownKey(f, d) == s.DeathKey) { shown = &d; } }
-		if (!shown && s.DeathSpike >= 0) { for (const Down& d : downs) { if (!shown && d.S.From >= s.DeathSpike - 1000 && d.S.From <= s.DeathSpike + 4000) { shown = &d; } } }
+		if (!shown && s.DeathSpike >= 0) { for (const Down& d : downs) { if (!shown && SpikeOf(f.TheirSpikesMs, d.S.From) == s.DeathSpike) { shown = &d; } } }
 		if (!shown && c.MeRaw) { for (const Down& d : downs) { if (!shown && d.P == c.MeRaw) { shown = &d; } } }
 		if (!shown && !downs.empty()) { shown = &downs[0]; }
 		if (shown) { s.DeathKey = DownKey(f, *shown); }
 		s.DeathSpike = -1;
 
 		float listW = 250;
-		List(c, downs, listW, shown ? DownKey(f, *shown) : std::string());
+		List(c, downs, listW, s.DeathFilter == 3 ? std::string() : shown ? DownKey(f, *shown) : std::string());
 		ImGui::SameLine(0, 10);
 		ImGui::BeginChild("downdetail", ImVec2(0, 0), false);
+		if (s.DeathFilter == 3) { RevivesTable(c); ImGui::EndChild(); return; }
 		if (!shown) { ImGui::TextColored(kMuted, "No downs for this filter."); ImGui::Spacing(); RevivesTable(c); ImGui::EndChild(); return; }
 		static std::string cachedKey;
 		static Detail cached;
-		std::string key = DownKey(f, *shown);
+		std::string key = DownKey(f, *shown) + "|" + std::to_string(DataVersion());
 		if (key != cachedKey) { cached = Explain(f, *shown); cachedKey = key; }
 		const Detail& det = cached;
 		ImGui::SetWindowFontScale(1.1f);
 		Answer(det.Verdict);
 		ImGui::SetWindowFontScale(1.0f);
 		ImGui::Spacing();
+		// first how they went down and what hit them, then the clock and every event (the user's v7 pick, proposal A)
+		ImGui::TextColored(kMuted, "How they went down");
+		Steps(f, det);
+		ImGui::Spacing();
+		TopSkills(f, det);
+		ImGui::Spacing();
+		ImGui::TextColored(kMuted, "The 6 s on a clock, then second by second");
 		DownClock(f, *shown, det);
 		ImGui::TextColored(kMuted, "Dodges:");
 		ImGui::SameLine();
@@ -689,7 +964,7 @@ namespace Ui
 		}
 		ImGui::Spacing();
 		ImGui::Separator();
-		RevivesTable(c);
+		if (ImGui::SmallButton("Revive skills and the revive order >")) { s.DeathFilter = 3; }
 		ImGui::EndChild();
 	}
 }

@@ -9,6 +9,7 @@
 #include <ShlObj.h>
 
 #include "imgui/imgui.h"
+#include "mumble/Mumble.h"
 #include "nexus/Nexus.h"
 
 #include "Icons.h"
@@ -26,6 +27,8 @@ namespace
 
 	AddonDefinition_t s_AddonDef{};
 	AddonAPI_t*       s_Api = nullptr;
+	NexusLinkData_t*  s_NexusLink = nullptr; // IsGameplay: false on loading screens and the character select
+	Mumble::Data*     s_Mumble = nullptr;    // Context.IsMapOpen: the world map is open
 
 	// Callbacks come from Nexus and the game's window procedure: C boundaries, so nothing may throw through
 	// them. Counting calls in flight lets Unload wait for them.
@@ -53,7 +56,14 @@ namespace
 		s_InFlight.fetch_sub(1);
 	}
 
-	void OnRender() { Guarded("the window", [] { Ui::Render(); }); }
+	void OnRender()
+	{
+		Guarded("the window", []
+		{
+			Ui::SetGameState(s_NexusLink == nullptr || s_NexusLink->IsGameplay, s_Mumble != nullptr && s_Mumble->Context.IsMapOpen);
+			Ui::Render();
+		});
+	}
 	void OnOptions() { Guarded("the options page", [] { Ui::Options(); }); }
 	void OnQuickAccessMenu()
 	{
@@ -103,7 +113,20 @@ namespace
 		return out;
 	}
 
+	void AddonLoadInner(AddonAPI_t* aApi);
+
+	// Nexus calls this across a C boundary: an exception must not reach it (it would take the game down)
 	void AddonLoad(AddonAPI_t* aApi)
+	{
+		try { AddonLoadInner(aApi); }
+		catch (const std::exception& e)
+		{
+			if (s_Api) { std::string m = std::string("Couldn't load: ") + e.what(); s_Api->Log(LOGL_CRITICAL, ADDON_NAME, m.c_str()); }
+		}
+		catch (...) { if (s_Api) { s_Api->Log(LOGL_CRITICAL, ADDON_NAME, "Couldn't load."); } }
+	}
+
+	void AddonLoadInner(AddonAPI_t* aApi)
 	{
 		s_Api = aApi;
 		ImGui::SetCurrentContext(static_cast<ImGuiContext*>(s_Api->ImguiContext));
@@ -117,10 +140,13 @@ namespace
 		Icons::Init(s_Api);
 		SkillIcons::Init(s_Api, addonDir / "skill_icons.txt");
 		Ui::LoadSettings(addonDir / "settings.txt");
+		Ui::SetArcdpsIni(std::filesystem::path(s_Api->Paths_GetAddonDirectory("arcdps")) / "arcdps.ini");
+		s_NexusLink = static_cast<NexusLinkData_t*>(s_Api->DataLink_Get("DL_NEXUS_LINK"));
+		s_Mumble = static_cast<Mumble::Data*>(s_Api->DataLink_Get("DL_MUMBLE_LINK"));
 
 		std::filesystem::path folder = LogFolder();
 		Session::Start(folder, kSessionGapHours, addonDir / "boon_evidence.txt");
-		std::string msg = "Watching " + folder.string();
+		std::string msg = "Watching " + Session::PathText(folder);
 		s_Api->Log(LOGL_INFO, ADDON_NAME, msg.c_str());
 
 		s_Alive = true;

@@ -20,13 +20,7 @@ namespace Ui
 	{
 		constexpr float kReviveWalk = 1800;
 
-		const Player::Point* PosAt(const Player& p, int32_t aMs)
-		{
-			auto it = std::lower_bound(p.Pos.begin(), p.Pos.end(), aMs, [](const Player::Point& a, int32_t ms) { return a.Ms < ms; });
-			if (it == p.Pos.end()) { return p.Pos.empty() ? nullptr : &p.Pos.back(); }
-			if (it != p.Pos.begin() && aMs - (it - 1)->Ms < it->Ms - aMs) { --it; }
-			return std::abs(it->Ms - aMs) <= 2000 ? &*it : nullptr;
-		}
+		const Player::Point* PosAt(const Player& p, int32_t aMs) { return NearestPos(p, aMs); }
 
 		// The squad's revive order: Tempests and Catalysts (Glyph of Renewal, the fastest), then Mesmers (Illusion of
 		// Life), then Druids (Spirit of Nature) and Paragons (Battle Standard). The usual order (the user, 2026-09-24
@@ -83,26 +77,39 @@ namespace Ui
 
 		// Did they carry their revive tool this round? Yes if they used it. No if the slot evidently held something
 		// else: a Mesmer with three other utility skills (the user's rule: some run Veil or are DPS), a Druid or Paragon
-		// with another elite; this round, or over tonight when they never used the tool tonight (instant skills leave
-		// no cast, so one round rarely shows all three). Otherwise assumed yes.
+		// with another elite. Instant skills leave no cast, so one round rarely shows all three: the evidence runs back
+		// to their last use of the tool (other utilities seen since then: they swapped it out; the user ran Illusion of
+		// Life for the first hour of 30 Sept, then Veil, and stayed in the order), else forward to their next use, else
+		// over the whole night. Otherwise assumed yes.
 		bool Carries(const Ctx& c, const Player& p, int32_t aTool)
 		{
-			for (auto& u : p.ReviveUses) { if (SameTool(u.Skill, aTool)) { return true; } }
-			size_t enough = UtilityTool(aTool) ? 3 : 1;
-			std::set<int32_t> roots;
-			OtherSlots(*c.F, p, aTool, roots);
-			if (roots.size() >= enough) { return false; }
-			bool usedTonight = false;
-			for (const auto& fp : *c.Fights)
+			auto used = [&](const Player& q) { return std::any_of(q.ReviveUses.begin(), q.ReviveUses.end(), [&](const auto& u) { return SameTool(u.Skill, aTool); }); };
+			auto me = [&](const Fight& f) -> const Player* { for (const Player& q : f.Players) { if (q.Account == p.Account && q.Spec == p.Spec) { return &q; } } return nullptr; };
+			if (used(p)) { return true; }
+			const size_t enough = UtilityTool(aTool) ? 3 : 1;
+			std::set<int32_t> here;
+			OtherSlots(*c.F, p, aTool, here);
+			if (here.size() >= enough) { return false; }
+			const auto& fights = *c.Fights;
+			std::set<int32_t> since = here;
+			for (int i = c.Index - 1; i >= 0; i--)
 			{
-				for (const Player& q : fp->Players)
-				{
-					if (q.Account != p.Account || q.Spec != p.Spec) { continue; }
-					for (auto& u : q.ReviveUses) { usedTonight |= SameTool(u.Skill, aTool); }
-					OtherSlots(*fp, q, aTool, roots);
-				}
+				const Player* q = me(*fights[i]);
+				if (!q) { continue; }
+				if (used(*q)) { return since.size() < enough; }
+				OtherSlots(*fights[i], *q, aTool, since);
+				if (since.size() >= enough) { return false; }
 			}
-			return usedTonight || roots.size() < enough;
+			std::set<int32_t> until = here;
+			for (int i = c.Index + 1; i < static_cast<int>(fights.size()); i++)
+			{
+				const Player* q = me(*fights[i]);
+				if (!q) { continue; }
+				if (used(*q)) { return until.size() < enough; }
+				OtherSlots(*fights[i], *q, aTool, until);
+				if (until.size() >= enough) { return false; }
+			}
+			return true; // never used tonight and the slot never showed full: assumed carried
 		}
 
 		// The usual order: Tempests and Catalysts by subgroup, then Mesmers by subgroup, then Druids and Paragons by
@@ -192,7 +199,7 @@ namespace Ui
 			auto downAt = [](const Player& p, int32_t ms) { for (const auto& s : p.DownSpans) { if (s.From <= ms && s.To >= ms) { return true; } } return false; };
 			// Out of turn: someone earlier in the order, up and not yet used this time round, was skipped. When everyone
 			// has used theirs, the order starts again.
-			std::vector<std::string> verdict(rows.size());
+			std::vector<std::string> verdict(rows.size()), skippedWho(rows.size());
 			std::set<const Player*> used;
 			int early = 0;
 			for (size_t i = 0; i < rows.size(); i++)
@@ -212,8 +219,11 @@ namespace Ui
 					skipped += (skipped.empty() ? "" : ", ") + t.P->Name + ": " + reason(*t.P, r.U.Ms);
 					nSkipped++;
 				}
-				verdict[i] = skipped.empty() ? "yes" : "no: skipped " + std::to_string(nSkipped) + " (" + skipped + ")";
-				early += !skipped.empty();
+				// short in the table (the user, 2026-09-26: it wrapped a few letters a line), who and why on hover; no
+				// verdict for a cast with nobody down in reach (the turn didn't matter then)
+				verdict[i] = r.U.DownNear == 0 ? "nobody down" : skipped.empty() ? "yes" : "no, " + std::to_string(nSkipped) + " skipped";
+				skippedWho[i] = skipped;
+				early += !skipped.empty() && r.U.DownNear > 0;
 				used.insert(r.P);
 				if (used.size() >= order.size()) { used.clear(); }
 			}
@@ -228,14 +238,14 @@ namespace Ui
 				if (ImGui::BeginTable("revives", 7, flags))
 				{
 					ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 45);
-					ImGui::TableSetupColumn("Player", ImGuiTableColumnFlags_WidthFixed, 170);
-					ImGui::TableSetupColumn("Skill", ImGuiTableColumnFlags_WidthFixed, 150);
-					ImGui::TableSetupColumn("Down in reach", ImGuiTableColumnFlags_WidthFixed, 100);
-					ImGui::TableSetupColumn("Got up", ImGuiTableColumnFlags_WidthFixed, 70);
+					ImGui::TableSetupColumn("Player", ImGuiTableColumnFlags_WidthFixed, 150);
+					ImGui::TableSetupColumn("Skill", ImGuiTableColumnFlags_WidthFixed, 130);
+					ImGui::TableSetupColumn("Down near", ImGuiTableColumnFlags_WidthFixed, 80);
+					ImGui::TableSetupColumn("Got up", ImGuiTableColumnFlags_WidthFixed, 60);
 					ImGui::TableSetupColumn("Turn", ImGuiTableColumnFlags_WidthFixed, 45);
 					ImGui::TableSetupColumn("In turn", ImGuiTableColumnFlags_WidthStretch);
-					Headers({{"Time", nullptr}, {"Player", nullptr}, {"Skill", nullptr}, {"Down in reach", "Allies downed within 1500"}, {"Got up", "Of those, up within 3 s"},
-						{"Turn", "Place in the revive order"}, {"In turn", "Or who was skipped, why"}});
+					Headers({{"Time", nullptr}, {"Player", nullptr}, {"Skill", nullptr}, {"Down near", "Allies downed within 1500"}, {"Got up", "Of those, up within 3 s"},
+						{"Turn", "Place in the revive order"}, {"In turn", "Hover: who was skipped"}});
 					for (size_t i = 0; i < rows.size(); i++)
 					{
 						const Row& r = rows[i];
@@ -250,9 +260,8 @@ namespace Ui
 						int tier = OrderTool(*r.P, r.U.Skill) ? tierOf(r.P) : -1;
 						NumCell(tier < 0 ? "-" : std::to_string(tier + 1));
 						ImGui::TableNextColumn();
-						ImGui::PushTextWrapPos(0.0f);
 						ImGui::TextUnformatted(verdict[i].c_str());
-						ImGui::PopTextWrapPos();
+						if (!skippedWho[i].empty() && ImGui::IsItemHovered()) { ImGui::SetTooltip("Skipped: %s", skippedWho[i].c_str()); }
 					}
 					ImGui::EndTable();
 				}
@@ -262,7 +271,7 @@ namespace Ui
 			State& s = S();
 			std::string head = std::string("Revive order: ") + (s.ReviveOrder.empty() ? "the usual (Tempests and Catalysts, then Mesmers by subgroup, then Druids and Paragons by subgroup)" : "yours") + "###reviveorder";
 			if (ForcedOpen == kForceReviveOrder) { ImGui::SetNextItemOpen(true); } // render harness
-			if (order.empty() || !ImGui::CollapsingHeader(head.c_str())) { return; }
+			if (order.empty() || !ImGui::CollapsingHeader(head.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) { return; }
 			ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit;
 			int move = -1, dir = 0;
 			if (ImGui::BeginTable("reviveorder", 5, flags))
@@ -317,6 +326,8 @@ namespace Ui
 	DeathCause CauseOf(const Fight& f, const Player& p, const Analysis::Span& s)
 	{
 		static std::map<std::tuple<std::string, std::string, int32_t>, DeathCause> memo;
+		static uint64_t memoVersion = UINT64_MAX;
+		if (memoVersion != DataVersion()) { memo.clear(); memoVersion = DataVersion(); }
 		auto key = std::make_tuple(f.Stamp, p.Account, s.From);
 		auto it = memo.find(key);
 		if (it == memo.end()) { it = memo.emplace(key, ComputeCause(f, p, s)).first; }
@@ -355,8 +366,7 @@ namespace Ui
 		}
 		double healed = 0;
 		for (auto& [ms, a] : p.HealsIn) { if (ms >= from && ms <= t) { healed += a; } }
-		bool spike = false;
-		for (int64_t sp : f.TheirSpikesMs) { if (t >= sp - 1000 && t <= sp + 4000) { spike = true; } }
+		bool spike = SpikeOf(f.TheirSpikesMs, t) >= 0;
 		auto at = [](const Player& q, int32_t aMs) -> const Player::Point*
 		{
 			const Player::Point* best = nullptr;

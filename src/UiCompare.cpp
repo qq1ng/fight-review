@@ -26,9 +26,14 @@ namespace Ui
 			struct Line { std::string Label, A, B, Note; };
 			std::vector<Line> lines;
 			double ra = Rate(m, a, m.Total(a)), rb = Rate(m, b, m.Total(b));
-			std::string unit = m.What == K_Boon ? "" : std::string(" ") + RateUnit(m);
-			std::string lead = ra > rb * 1.02 ? c.LeftName() + " +" + Num(ra - rb) + unit : rb > ra * 1.02 ? b.Name + " +" + Num(rb - ra) + unit : "about the same";
-			lines.push_back({m.Name + unit, Known(m, a) ? Num(ra) : "unknown", Known(m, b) ? Num(rb) : "unknown", lead});
+			const char* unit = m.What == K_Boon ? "" : RateUnit(m, a);
+			std::string lead = ra > rb * 1.02 ? c.LeftName() + " +" + WithUnit(Num(ra - rb), unit) : rb > ra * 1.02 ? b.Name + " +" + WithUnit(Num(rb - ra), unit) : "about the same";
+			lines.push_back({WithUnit(m.Name, unit), Known(m, a) ? Num(ra) : "unknown", Known(m, b) ? Num(rb) : "unknown", lead});
+			// one round: the per-second rate as well (ArcDPS and Healing Stats show both)
+			if (m.What == K_Amount && Totals(a))
+			{
+				lines.push_back({m.Name + " /s", Known(m, a) ? Num(PerS(a, m.Total(a))) : "unknown", Known(m, b) ? Num(PerS(b, m.Total(b))) : "unknown", "per second alive"});
+			}
 			if (aMetric == kMetricDamage || aMetric == kMetricDamageAll)
 			{
 				auto dc = [](const Player& p) { return Num(double(p.DownContribution)) + (p.Damage > 0 ? " (" + std::to_string(int(100.0 * p.DownContribution / p.Damage + 0.5)) + "%)" : ""); };
@@ -103,18 +108,18 @@ namespace Ui
 		std::vector<GapRow> all = only;
 		all.insert(all.end(), both.begin(), both.end());
 		std::sort(all.begin(), all.end(), [](const GapRow& a, const GapRow& b) { return a.Right - a.Left > b.Right - b.Left; });
-		std::string unit = RateUnit(m);
+		const char* unit = RateUnit(m, you);
 		std::vector<std::string> top;
 		for (const GapRow& g : all) { if (g.Right > g.Left && top.size() < 2) { top.push_back(g.Skill == 0 ? "other sources (traits, relics, runes)" : c.Name(g.Skill)); } }
 		if (rt > ry)
 		{
 			std::string from = top.empty() ? "" : top.size() == 1 ? ", mostly from " + top[0] : ", mostly from " + top[0] + " and " + top[1];
 			std::string yours = c.LeftIsYou() ? "your " : c.You.Name + "'s ";
-			Answer(vs.Name + " got " + Num(rt - ry) + " " + unit + " more " + Lower(m.Name) + from + ": " + Num(rt) + " against " + yours + Num(ry) + ".");
+			Answer(vs.Name + " got " + WithUnit(Num(rt - ry), unit) + " more " + Lower(m.Name) + from + ": " + Num(rt) + " against " + yours + Num(ry) + ".");
 		}
 		else if (ry <= 0 && rt <= 0) { Answer("Neither " + (c.LeftIsYou() ? std::string("you") : c.You.Name) + " nor " + vs.Name + " got any " + Lower(m.Name) + "."); }
-		else if (ry <= rt * 1.02) { Answer(c.LeftName() + " and " + vs.Name + " got about the same " + Lower(m.Name) + ": " + Num(ry) + " " + unit + " against " + Num(rt) + "."); }
-		else { Answer(c.LeftName() + " got more " + Lower(m.Name) + " than " + vs.Name + ": " + Num(ry) + " " + unit + " against " + Num(rt) + "."); }
+		else if (ry <= rt * 1.02) { Answer(c.LeftName() + " and " + vs.Name + " got about the same " + Lower(m.Name) + ": " + WithUnit(Num(ry), unit) + " against " + Num(rt) + "."); }
+		else { Answer(c.LeftName() + " got more " + Lower(m.Name) + " than " + vs.Name + ": " + WithUnit(Num(ry), unit) + " against " + Num(rt) + "."); }
 		if (!aInReview) { Stats(c, aMetric); }
 
 		// The key
@@ -122,28 +127,37 @@ namespace Ui
 		const std::string leftShort = c.LeftIsYou() ? "you" : c.You.Name;
 		Key(kYou, (leftShort + " got more").c_str());
 		Key(kPeerTick, (vs.Name + " got more").c_str());
-		ImGui::TextColored(kMuted, "%s from each skill, bars from the middle line", (Lower(m.Name) + (m.What == K_Boon ? "" : " " + unit)).c_str());
+		ImGui::TextColored(kMuted, "%s from each skill, bars from the middle line", (m.What == K_Boon ? Lower(m.Name) : WithUnit(Lower(m.Name), unit)).c_str());
 		const int k = TimingWindow(aMetric);
-		const char* timingHead = k == Analysis::T_IntoOurs ? "In our spike" : k == Analysis::T_AheadOfTheirs ? "Before enemy spike" : "In an enemy spike";
 
 		// The rows: a group for skills only one of them got anything from, one for the rest; each shows its biggest
 		// gaps and folds the rest into one line
 		float lh = ImGui::GetTextLineHeight();
-		const float nameW = 210, barW = 360, timeX = nameW + barW + 16, whyX = timeX + 120;
+		const float nameW = 210, barW = 360, timeX = nameW + barW + 16, colW = 64, whyX = timeX + 2 * colW + 12;
 		double maxGap = 1e-9;
 		for (const GapRow& g : all) { maxGap = std::max(maxGap, std::fabs(g.Right - g.Left)); }
 		{
+			// two lines: the timing heading over its two columns, then each column's player
 			ImVec2 p = ImGui::GetCursorScreenPos();
 			ImDrawList* dl = ImGui::GetWindowDrawList();
 			ImU32 muted = ImGui::GetColorU32(kMuted);
-			dl->AddText(p, muted, "Skill");
+			std::string timing = std::string("Casts ") + WindowLabel(k);
+			dl->AddText(ImVec2(p.x + timeX, p.y), muted, timing.c_str());
+			float y2 = p.y + lh + 1;
+			dl->AddText(ImVec2(p.x, y2), muted, "Skill");
 			std::string l = "< " + leftShort + " more", r = vs.Name + " more >";
-			dl->AddText(ImVec2(p.x + nameW, p.y), muted, l.c_str());
-			dl->AddText(ImVec2(p.x + nameW + barW - ImGui::CalcTextSize(r.c_str()).x, p.y), muted, r.c_str());
-			dl->AddText(ImVec2(p.x + timeX, p.y), muted, timingHead);
-			dl->AddText(ImVec2(p.x + whyX, p.y), muted, "Why");
-			ImGui::Dummy(ImVec2(1, lh));
-			if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Casts %s: left, then right", WindowLabel(k)); }
+			dl->AddText(ImVec2(p.x + nameW, y2), muted, l.c_str());
+			dl->AddText(ImVec2(p.x + nameW + barW - ImGui::CalcTextSize(r.c_str()).x, y2), muted, r.c_str());
+			for (int side = 0; side < 2; side++)
+			{
+				float cx = p.x + timeX + side * colW;
+				dl->PushClipRect(ImVec2(cx, y2), ImVec2(cx + colW - 6, y2 + lh), true);
+				dl->AddText(ImVec2(cx, y2), muted, (side ? vs.Name : leftShort).c_str());
+				dl->PopClipRect();
+			}
+			dl->AddText(ImVec2(p.x + whyX, y2), muted, "Why");
+			ImGui::Dummy(ImVec2(1, lh * 2 + 1));
+			if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Of each player's casts, how many %s: %s, then %s", WindowLabel(k), leftShort.c_str(), vs.Name.c_str()); }
 		}
 		auto row = [&](const GapRow& g)
 		{
@@ -182,12 +196,21 @@ namespace Ui
 			// timing: casts in the window, left then right
 			const SkillRow* a = Row(you, g.Skill);
 			const SkillRow* b = Row(vs, g.Skill);
-			auto part = [&](const SkillRow* r, int n) { return n ? std::to_string(r ? r->Timing[k] : 0) + " of " + std::to_string(n) : std::string("-"); };
-			std::string timing = g.CastsL || g.CastsR ? part(a, g.CastsL) + " \xc2\xb7 " + part(b, g.CastsR) : std::string("no casts");
-			dl->AddText(ImVec2(p.x + timeX, p.y + 2), g.CastsL || g.CastsR ? ink : muted, timing.c_str());
+			auto part = [&](const SkillRow* r, int n) { return n ? std::to_string(r ? r->Timing[k] : 0) + " of " + std::to_string(n) : std::string("none"); };
+			if (g.CastsL || g.CastsR)
+			{
+				std::string pl = part(a, g.CastsL), pr = part(b, g.CastsR);
+				dl->AddText(ImVec2(p.x + timeX, p.y + 2), g.CastsL ? ink : muted, pl.c_str());
+				dl->AddText(ImVec2(p.x + timeX + colW, p.y + 2), g.CastsR ? ink : muted, pr.c_str());
+			}
+			else { dl->AddText(ImVec2(p.x + timeX, p.y + 2), muted, "nothing cast"); }
 			// why: the reason on the side that got less
 			std::string why;
-			if (g.Left <= 0) { why = "only " + vs.Name + (g.CastsR ? " (" + std::to_string(g.CastsR) + (g.CastsR == 1 ? " cast)" : " casts)") : ""); }
+			// both cast it but one got nothing from it: say that, not "only" (Ancestral Grace cast twice each, healing once)
+			auto none = [&](const std::string& aWho, int aCasts) { return aWho + ": " + std::to_string(aCasts) + (aCasts == 1 ? " cast" : " casts") + ", none from it"; };
+			if (g.Left <= 0 && g.CastsL > 0) { why = none(leftShort, g.CastsL); }
+			else if (g.Right <= 0 && g.CastsR > 0) { why = none(vs.Name, g.CastsR); }
+			else if (g.Left <= 0) { why = "only " + vs.Name + (g.CastsR ? " (" + std::to_string(g.CastsR) + (g.CastsR == 1 ? " cast)" : " casts)") : ""); }
 			else if (g.Right <= 0) { why = "only " + leftShort + (g.CastsL ? " (" + std::to_string(g.CastsL) + (g.CastsL == 1 ? " cast)" : " casts)") : ""); }
 			else if (gap > 0) { why = leftShort + ": " + Explain(you, vs, vs.Name, aMetric, g.Skill, c.OneRound, c.LeftIsYou() ? "" : you.Name).Word; }
 			else { why = vs.Name + ": " + Explain(vs, you, leftShort, aMetric, g.Skill, c.OneRound, vs.Name).Word; }
@@ -209,7 +232,7 @@ namespace Ui
 			ImGui::Spacing();
 			ImGui::TextUnformatted(aTitle);
 			ImGui::SameLine();
-			ImGui::TextColored(kMuted, "%s +%s, %s +%s %s", leftShort.c_str(), Num(l).c_str(), vs.Name.c_str(), Num(r).c_str(), unit.c_str());
+			ImGui::TextColored(kMuted, "%s +%s, %s +%s", leftShort.c_str(), Num(l).c_str(), vs.Name.c_str(), WithUnit(Num(r), unit).c_str());
 			const size_t kShown = 5;
 			size_t n = aMore ? aRows.size() : std::min(kShown, aRows.size());
 			for (size_t i = 0; i < n; i++) { row(aRows[i]); }
@@ -217,13 +240,13 @@ namespace Ui
 			{
 				double sum = 0;
 				for (size_t i = kShown; i < aRows.size(); i++) { sum += std::fabs(aRows[i].Right - aRows[i].Left); }
-				std::string label = aMore ? std::string("Show the biggest only") : "+ " + std::to_string(aRows.size() - kShown) + " smaller (together " + Num(sum) + " " + unit + ")";
+				std::string label = aMore ? std::string("Show the biggest only") : "+ " + std::to_string(aRows.size() - kShown) + " smaller (together " + WithUnit(Num(sum), unit) + ")";
 				ImGui::PushID(aTitle);
 				if (ImGui::SmallButton(label.c_str())) { aMore = !aMore; }
 				ImGui::PopID();
 			}
 		};
-		group("Only one of them used it", only, s.CompareMore[0]);
+		group("Only one of them got any from it", only, s.CompareMore[0]);
 		group("Both used it", both, s.CompareMore[1]);
 		if (aMetric == kMetricHeal)
 		{
@@ -238,18 +261,19 @@ namespace Ui
 			if (ImGui::BeginTable("rest", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit))
 			{
 				ImGui::TableSetupColumn("Skill", ImGuiTableColumnFlags_WidthFixed, 210);
-				const std::string leftHead = c.LeftName() + " /min", rightHead = vs.Name + " /min";
+				const bool totals = Totals(you);
+				const std::string leftHead = c.LeftName() + (totals ? " casts" : " /min"), rightHead = vs.Name + (totals ? " casts" : " /min");
 				ImGui::TableSetupColumn(leftHead.c_str(), ImGuiTableColumnFlags_WidthFixed, 110);
 				ImGui::TableSetupColumn(rightHead.c_str(), ImGuiTableColumnFlags_WidthFixed, 110);
-				Headers({{"Skill", nullptr}, {leftHead.c_str(), "Casts per minute"}, {rightHead.c_str(), "Casts per minute"}});
+				Headers({{"Skill", nullptr}, {leftHead.c_str(), totals ? "Casts this round" : "Casts per minute"}, {rightHead.c_str(), totals ? "Casts this round" : "Casts per minute"}});
 				for (int32_t sk : rest)
 				{
 					ImGui::TableNextRow();
 					ImGui::TableNextColumn();
 					SkillIcon(sk, c.Name(sk));
 					ImGui::TextUnformatted(c.Name(sk).c_str());
-					NumCell(Num(PerS(you, casts(you, sk)) * 60));
-					NumCell(Num(PerS(vs, casts(vs, sk)) * 60), &kMuted);
+					NumCell(totals ? std::to_string(casts(you, sk)) : Num(PerS(you, casts(you, sk)) * 60));
+					NumCell(totals ? std::to_string(casts(vs, sk)) : Num(PerS(vs, casts(vs, sk)) * 60), &kMuted);
 				}
 				ImGui::EndTable();
 			}
@@ -290,12 +314,21 @@ namespace Ui
 			if (!c.OneRound) { ImGui::TextColored(kMuted, "Over time shows the round picked at the top."); }
 			std::string what = aMetric == kMetricCleanses || aMetric == kMetricStrips ? Lower(m.Name) + " per second" : Lower(m.Name) + " /s";
 			ImGui::Text("%s and %s over the round, %s", c.LeftName().c_str(), b.Name.c_str(), what.c_str());
+			// heals another player's Healing Stats sent late arrive stamped with one moment: say so, don't draw them
+			std::string late;
+			for (const Player* p : {&a, &b})
+			{
+				if (aMetric != kMetricHeal || p->HealLate <= 0) { continue; }
+				late += (late.empty() ? "" : " ") + (p == &a && c.LeftIsYou() ? std::string("Your") : p->Name + "'s") + " Healing Stats sent " + Num(double(p->HealLate)) +
+					" of their healing late, all at " + Duration(p->HealLateMs) + ": it is in the totals, not on this time line.";
+			}
 			ImGui::SameLine(0, 20);
 			Key(kYou, c.LeftIsYou() ? "you" : a.Name.c_str());
 			Key(kPeerTick, b.Name.c_str());
 			Key(kOurBand, "our spike");
 			Key(kEnemyBand, "enemy spike");
 			ImGui::NewLine();
+			if (!late.empty()) { ImGui::PushTextWrapPos(0); ImGui::TextColored(kMuted, "%s", late.c_str()); ImGui::PopTextWrapPos(); }
 
 			const float labelW = 200, lh = ImGui::GetTextLineHeight();
 			float width = std::max(300.0f, ImGui::GetContentRegionAvail().x - labelW - 8), h = lh * 8;

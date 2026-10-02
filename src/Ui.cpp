@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cfloat>
+#include <charconv>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 
@@ -20,12 +23,83 @@ namespace Ui
 	int ForcedMetric = -1;
 	int ForcedOpen = -1;
 	std::string ForcedYou;
-	bool ShowMini = false;
+	bool ShowMini = true; // on by default (the v6 design); the settings file keeps the player's choice
+
+	namespace
+	{
+		// The summary window's style (right-click > Style), saved in settings.txt. Width or height 0: fit the text.
+		struct MiniStyle { bool Title = true, Background = true; float Alpha = 1.0f, Width = 0, Height = 0; };
+		MiniStyle s_Mini;
+		bool s_MiniDirty = false; // changed in the menu, saved when the drag ends
+		bool s_Gameplay = true, s_MapOpen = false;
+	}
+
+	void SetGameState(bool aGameplay, bool aMapOpen) { s_Gameplay = aGameplay; s_MapOpen = aMapOpen; }
+
+	namespace
+	{
+		// "0.6" whatever the C locale says (another addon may set one that writes 0,6)
+		float Number(const std::string& aText, float aDefault)
+		{
+			float v = aDefault;
+			auto [end, err] = std::from_chars(aText.data(), aText.data() + aText.size(), v);
+			return err == std::errc() ? v : aDefault;
+		}
+	}
 
 	namespace
 	{
 		std::filesystem::path s_SettingsFile; // empty: not saved (the render harness)
+		std::filesystem::path s_ArcdpsIni;    // empty: unknown (the render harness)
+
+		// No rounds yet: what stands in the way, from arcdps.ini (read once a second at most)
+		void FirstRun(const Session::Snapshot& aSnap)
+		{
+			static double checked = -10;
+			static bool iniFound = false, wvw = true;
+			static int minimum = -1;
+			if (ImGui::GetTime() - checked > 1.0)
+			{
+				checked = ImGui::GetTime();
+				iniFound = false; wvw = true; minimum = -1;
+				std::ifstream in(s_ArcdpsIni);
+				std::string line;
+				while (!s_ArcdpsIni.empty() && std::getline(in, line))
+				{
+					iniFound = true;
+					while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) { line.pop_back(); }
+					if (line.rfind("boss_encounter_savewvw=", 0) == 0) { wvw = line.substr(23) == "1"; }
+					else if (line.rfind("minimum_log_duration=", 0) == 0) { minimum = std::atoi(line.c_str() + 21); }
+				}
+			}
+			const ImVec4 bad(0xd9 / 255.0f, 0x59 / 255.0f, 0x26 / 255.0f, 1.0f), good(0x39 / 255.0f, 0x87 / 255.0f, 0xe5 / 255.0f, 1.0f);
+			auto row = [](bool aOk, const ImVec4& aCol, const std::string& aText)
+			{
+				ImGui::TextColored(aCol, "%s", aOk ? "ok" : "no");
+				ImGui::SameLine(ImGui::GetTextLineHeight() * 2.5f);
+				ImGui::PushTextWrapPos(0.0f);
+				ImGui::TextUnformatted(aText.c_str());
+				ImGui::PopTextWrapPos();
+			};
+			std::error_code ec;
+			bool folder = std::filesystem::exists(aSnap.Folder, ec);
+			if (iniFound && !wvw) { ImGui::TextUnformatted("No WvW rounds yet: ArcDPS isn't saving WvW logs."); }
+			else { ImGui::TextUnformatted("No fights yet. A round shows here a few seconds after ArcDPS saves its log; nothing is shown during a fight."); }
+			ImGui::Spacing();
+			if (!s_ArcdpsIni.empty())
+			{
+				if (!iniFound) { row(false, bad, "ArcDPS's settings (arcdps.ini) weren't found: is ArcDPS installed?"); }
+				else if (wvw) { row(true, good, "ArcDPS saves WvW logs."); }
+				else { row(false, bad, "WvW logs are off. Open ArcDPS's options (Alt+Shift+T by default) and turn on saving logs in WvW."); }
+				if (iniFound && minimum > 30) { row(false, bad, "ArcDPS skips fights shorter than " + std::to_string(minimum) + " s (its minimum log length): short skirmishes won't show."); }
+				else if (iniFound && minimum >= 0) { row(true, good, "Fights of " + std::to_string(minimum) + " s or more are saved."); }
+			}
+			row(folder, folder ? good : bad, (folder ? "Log folder: " : "Log folder not found yet (ArcDPS creates it with the first log): ") + Session::PathText(aSnap.Folder));
+			if (!aSnap.Status.empty()) { ImGui::TextColored(kMuted, "%s", aSnap.Status.c_str()); }
+		}
 	}
+
+	void SetArcdpsIni(const std::filesystem::path& aFile) { s_ArcdpsIni = aFile; }
 
 	// key=value lines; revive_order is a comma-separated list of accounts
 	void LoadSettings(const std::filesystem::path& aFile)
@@ -39,6 +113,11 @@ namespace Ui
 			if (eq == std::string::npos) { continue; }
 			std::string key = line.substr(0, eq), value = line.substr(eq + 1);
 			if (key == "summary") { ShowMini = value == "1"; }
+			else if (key == "summary_title") { s_Mini.Title = value == "1"; }
+			else if (key == "summary_background") { s_Mini.Background = value == "1"; }
+			else if (key == "summary_alpha") { s_Mini.Alpha = std::clamp(Number(value, 1.0f), 0.0f, 1.0f); }
+			else if (key == "summary_width") { s_Mini.Width = std::max(0.0f, Number(value, 0.0f)); }
+			else if (key == "summary_height") { s_Mini.Height = std::max(0.0f, Number(value, 0.0f)); }
 			else if (key == "revive_order")
 			{
 				auto& order = S().ReviveOrder;
@@ -59,6 +138,11 @@ namespace Ui
 		if (s_SettingsFile.empty()) { return; }
 		std::ofstream out(s_SettingsFile, std::ios::trunc);
 		out << "summary=" << (ShowMini ? 1 : 0) << '\n';
+		out << "summary_title=" << (s_Mini.Title ? 1 : 0) << '\n';
+		out << "summary_background=" << (s_Mini.Background ? 1 : 0) << '\n';
+		out << "summary_alpha=" << s_Mini.Alpha << '\n';
+		out << "summary_width=" << s_Mini.Width << '\n';
+		out << "summary_height=" << s_Mini.Height << '\n';
 		out << "revive_order=";
 		const auto& order = S().ReviveOrder;
 		for (size_t i = 0; i < order.size(); i++) { out << (i ? "," : "") << order[i]; }
@@ -137,7 +221,7 @@ namespace Ui
 			return clicked;
 		}
 
-		// The round picker (by start and length, the result coloured and in words), This round / Tonight: every tab
+		// The round picker (by start and length, the result coloured and in words): every tab
 		void HeaderRow(const Session::Snapshot& aSnap, int aIndex)
 		{
 			State& s = S();
@@ -183,22 +267,6 @@ namespace Ui
 			ImGui::AlignTextToFramePadding();
 			std::string where = s.Selected < 0 ? "latest of " + std::to_string(count) : "round " + std::to_string(aIndex + 1) + " of " + std::to_string(count);
 			ImGui::TextColored(kMuted, "%s", where.c_str());
-			// This round / Tonight, as one control at the right
-			float segW = ImGui::CalcTextSize("This round").x + ImGui::CalcTextSize("Tonight").x + ImGui::GetStyle().FramePadding.x * 4 + 2;
-			ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 10, ImGui::GetWindowContentRegionMax().x - segW));
-			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2, ImGui::GetStyle().ItemSpacing.y));
-			auto seg = [](const char* aLabel, bool aOn)
-			{
-				ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(aOn ? ImGuiCol_ButtonActive : ImGuiCol_FrameBg));
-				bool clicked = ImGui::Button(aLabel);
-				ImGui::PopStyleColor();
-				return clicked;
-			};
-			if (seg("This round", !s.AllRounds)) { s.AllRounds = false; }
-			ImGui::SameLine();
-			if (seg("Tonight", s.AllRounds)) { s.AllRounds = true; }
-			if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Every round loaded, added up"); }
-			ImGui::PopStyleVar();
 		}
 	}
 
@@ -209,37 +277,86 @@ namespace Ui
 		return true;
 	}
 
+	namespace
+	{
+		// Right-click > Style, as on ArcDPS's windows: title bar, background and its opacity, width and height
+		void MiniStyleMenu()
+		{
+			if (!ImGui::BeginPopupContextWindow("summary_menu")) { return; }
+			if (ImGui::BeginMenu("Style"))
+			{
+				bool changed = false;
+				changed |= ImGui::Checkbox("Title bar", &s_Mini.Title);
+				changed |= ImGui::Checkbox("Background", &s_Mini.Background);
+				ImGui::SetNextItemWidth(140);
+				changed |= ImGui::SliderFloat("Background opacity", &s_Mini.Alpha, 0.0f, 1.0f, "%.2f");
+				ImGui::SetNextItemWidth(140);
+				changed |= ImGui::DragFloat("Width", &s_Mini.Width, 1.0f, 0.0f, 2000.0f, s_Mini.Width > 0 ? "%.0f" : "fit");
+				if (ImGui::IsItemHovered()) { ImGui::SetTooltip("0: as wide as the text; set, the text wraps to it"); }
+				ImGui::SetNextItemWidth(140);
+				changed |= ImGui::DragFloat("Height", &s_Mini.Height, 1.0f, 0.0f, 2000.0f, s_Mini.Height > 0 ? "%.0f" : "fit");
+				if (ImGui::IsItemHovered()) { ImGui::SetTooltip("0: as tall as the text"); }
+				if (changed)
+				{
+					s_Mini.Width = std::max(0.0f, s_Mini.Width);
+					s_Mini.Height = std::max(0.0f, s_Mini.Height);
+					s_MiniDirty = true;
+				}
+				ImGui::EndMenu();
+			}
+			// with the title bar off there is no X: the way to close it (the options page brings it back)
+			if (ImGui::MenuItem("Hide")) { ShowMini = false; SaveSettings(); }
+			ImGui::EndPopup();
+		}
+	}
+
 	// The latest round in a few lines, always on screen if the player wants it; a click opens the full review
 	void RenderMini()
 	{
-		if (!ShowMini) { return; }
+		if (!ShowMini || s_MapOpen) { return; }
 		Session::Snapshot snap = Session::Get();
-		ImGui::SetNextWindowSize(ImVec2(360, 0), ImGuiCond_FirstUseEver);
-		bool shown = ImGui::Begin("Fight Review summary", &ShowMini, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoCollapse);
+		SetDataVersion(snap.Version);
+		ImGuiWindowFlags flags = ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize;
+		if (!s_Mini.Title) { flags |= ImGuiWindowFlags_NoTitleBar; }
+		if (!s_Mini.Background) { flags |= ImGuiWindowFlags_NoBackground; }
+		// width and height 0 fit the text; a set one is fixed (the text wraps to the width, a height cuts it)
+		if (s_Mini.Width > 0 && s_Mini.Height > 0) { ImGui::SetNextWindowSize(ImVec2(s_Mini.Width, s_Mini.Height), ImGuiCond_Always); flags |= ImGuiWindowFlags_NoScrollbar; }
+		else
+		{
+			flags |= ImGuiWindowFlags_AlwaysAutoResize;
+			ImVec2 least(s_Mini.Width, s_Mini.Height), most(s_Mini.Width > 0 ? s_Mini.Width : FLT_MAX, s_Mini.Height > 0 ? s_Mini.Height : FLT_MAX);
+			ImGui::SetNextWindowSizeConstraints(least, most);
+		}
+		ImGui::SetNextWindowBgAlpha(s_Mini.Alpha);
+		bool shown = ImGui::Begin("Fight Review summary", s_Mini.Title ? &ShowMini : nullptr, flags);
 		if (!ShowMini) { SaveSettings(); } // closed with its X
+		MiniStyleMenu();
+		if (s_MiniDirty && !ImGui::IsAnyItemActive()) { SaveSettings(); s_MiniDirty = false; }
 		if (!shown)
 		{
 			ImGui::End();
 			return;
 		}
-		if (snap.Fights.empty()) { ImGui::TextColored(kMuted, "No rounds yet."); ImGui::End(); return; }
+		if (s_Mini.Width > 0) { ImGui::PushTextWrapPos(0.0f); }
+		if (snap.Fights.empty())
+		{
+			ImGui::TextColored(kMuted, "No rounds yet.");
+			if (s_Mini.Width > 0) { ImGui::PopTextWrapPos(); }
+			ImGui::End();
+			return;
+		}
 		int last = static_cast<int>(snap.Fights.size()) - 1;
 		const Fight& f = *snap.Fights[last];
 		{
 			RoundFacts r = Facts(f);
-			ImGui::TextColored(kMuted, "%s  %s  %s  %s, %s", r.Start.c_str(), r.Length.c_str(), r.Players.c_str(), r.Result.c_str(), r.Downs.c_str());
+			ImGui::PushStyleColor(ImGuiCol_Text, kMuted);
+			ImGui::TextUnformatted((r.Start + "  " + r.Length + "  " + r.Players + "  " + r.Result + ", " + r.Downs).c_str());
+			ImGui::PopStyleColor();
 		}
 		const Ctx& c = CachedCtx(snap.Fights, last, false);
-		for (const std::string& line : SummaryLines(c)) { ImGui::TextUnformatted(line.c_str()); }
-		if (c.MeRaw)
-		{
-			for (const Analysis::Span& sp : c.MeRaw->DownSpans)
-			{
-				if (sp.Dead) { continue; }
-				ImGui::TextUnformatted(("Downed at " + Duration(sp.From) + ": " + CauseOf(f, *c.MeRaw, sp).Short).c_str());
-			}
-		}
-		if (ImGui::SmallButton("Open the review")) { ShowWindow = true; S().Selected = -1; S().SwitchTo = T_You; }
+		for (const std::string& line : SummaryWindowLines(c)) { ImGui::TextUnformatted(line.c_str()); }
+		if (ImGui::SmallButton("Open the summary")) { ShowWindow = true; S().Selected = -1; S().SwitchTo = T_Summary; }
+		if (s_Mini.Width > 0) { ImGui::PopTextWrapPos(); }
 		ImGui::End();
 	}
 
@@ -251,10 +368,33 @@ namespace Ui
 	}
 
 	// Drawing timed: the options page shows what the addon costs per frame (the user, 2026-09-25: low frames in a big fight)
+	// An exception while drawing would leave our windows open (Begin without End) in Nexus' frame, which ImGui doesn't
+	// check in a release build: close what we opened, then let it go on to be logged
 	void Render()
 	{
 		auto t0 = std::chrono::steady_clock::now();
-		RenderAll();
+		ImGuiContext& g = *ImGui::GetCurrentContext();
+		const int depth = g.CurrentWindowStack.Size;
+		const int colors = g.ColorStack.Size, vars = g.StyleVarStack.Size;
+		try { RenderAll(); }
+		catch (...)
+		{
+			while (g.CurrentWindowStack.Size > depth)
+			{
+				while (g.CurrentTable && (g.CurrentTable->OuterWindow == g.CurrentWindow || g.CurrentTable->InnerWindow == g.CurrentWindow)) { ImGui::EndTable(); }
+				ImGuiWindow* w = g.CurrentWindow;
+				while (g.CurrentTabBar) { ImGui::EndTabBar(); }
+				while (w->DC.TreeDepth > 0) { ImGui::TreePop(); }
+				while (g.GroupStack.Size > w->DC.StackSizesOnBegin.SizeOfGroupStack) { ImGui::EndGroup(); }
+				while (w->IDStack.Size > 1) { ImGui::PopID(); }
+				while (g.ColorStack.Size > w->DC.StackSizesOnBegin.SizeOfColorStack) { ImGui::PopStyleColor(); }
+				while (g.StyleVarStack.Size > w->DC.StackSizesOnBegin.SizeOfStyleVarStack) { ImGui::PopStyleVar(); }
+				if (w->Flags & ImGuiWindowFlags_ChildWindow) { ImGui::EndChild(); } else { ImGui::End(); }
+			}
+			while (g.ColorStack.Size > colors) { ImGui::PopStyleColor(); }
+			while (g.StyleVarStack.Size > vars) { ImGui::PopStyleVar(); }
+			throw;
+		}
 		s_FrameMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 		s_FrameAvg = s_FrameCount++ ? s_FrameAvg * 0.98 + s_FrameMs * 0.02 : s_FrameMs;
 		s_FrameWorst = std::max(s_FrameWorst * 0.999, s_FrameMs);
@@ -264,6 +404,7 @@ namespace Ui
 	{
 	void RenderAll()
 	{
+		if (!s_Gameplay) { s_Hovered = false; return; }
 		RenderMini();
 		if (!ShowWindow) { s_Hovered = false; return; }
 		ApplyWheel();
@@ -277,11 +418,10 @@ namespace Ui
 		if (!open) { ImGui::End(); return; }
 
 		Session::Snapshot snap = Session::Get();
+		SetDataVersion(snap.Version);
 		if (snap.Fights.empty())
 		{
-			ImGui::TextWrapped("No fights yet. Logs appear here a few seconds after ArcDPS saves them.");
-			ImGui::TextColored(kMuted, "Watching %s", snap.Folder.string().c_str());
-			if (!snap.Status.empty()) { ImGui::TextColored(kMuted, "%s", snap.Status.c_str()); }
+			FirstRun(snap);
 			ImGui::End();
 			return;
 		}
@@ -290,11 +430,15 @@ namespace Ui
 		if (ForcedOpen >= 0) { s.OpenFix = ForcedOpen; }
 		int count = static_cast<int>(snap.Fights.size());
 		int index = s.Selected < 0 || s.Selected >= count ? count - 1 : s.Selected;
-		const Ctx& c = CachedCtx(snap.Fights, index, s.AllRounds, ForcedYou);
 
 		HeaderRow(snap, index);
 		if (!snap.Status.empty()) { ImGui::TextColored(kMuted, "%s", snap.Status.c_str()); }
 
+		// a new round while following the latest: open on its Summary (the v6 design)
+		static int seen = 0;
+		// (not while the logs on disk load at start: they come in one by one)
+		if (count > seen && seen > 0 && !snap.Loading && s.Selected < 0 && s.SwitchTo < 0) { s.SwitchTo = T_Summary; }
+		seen = count;
 		int want = ForcedTab >= 0 ? ForcedTab : s.SwitchTo;
 		s.SwitchTo = -1;
 		auto tab = [want](const char* aName, int aIndex)
@@ -303,22 +447,33 @@ namespace Ui
 		};
 		if (ImGui::BeginTabBar("tabs"))
 		{
-			if (tab("You", T_You)) { ReviewTab(c); ImGui::EndTabItem(); }
+			if (tab("Summary", T_Summary)) { SummaryTab(CachedCtx(snap.Fights, index, false, ForcedYou)); ImGui::EndTabItem(); }
+			if (tab("You", T_You))
+			{
+				ScopeSwitch("you", s.YouTonight, "Your night: the fixes that keep coming back, round by round");
+				if (s.YouTonight)
+				{
+					// the night doesn't depend on the round picked: a round you took no part in falls back to your latest one
+					int night = index;
+					if (snap.Fights[night]->Pov < 0) { for (int i = count - 1; i >= 0; i--) { if (snap.Fights[i]->Pov >= 0) { night = i; break; } } }
+					TonightTab(CachedCtx(snap.Fights, night, true, ForcedYou));
+				}
+				else { ReviewTab(CachedCtx(snap.Fights, index, false, ForcedYou)); }
+				ImGui::EndTabItem();
+			}
 			if (tab("Deaths", T_Deaths)) { DeathsTab(CachedCtx(snap.Fights, index, false, ForcedYou)); ImGui::EndTabItem(); }
 			if (tab("Compare", T_Compare))
 			{
-				if (s.CompareLeft.empty() && s.CompareRight.empty()) { CompareTab(c); }
-				else { CompareTab(CachedCtx(snap.Fights, index, s.AllRounds, s.CompareLeft, s.CompareRight)); }
+				ScopeSwitch("compare", s.CompareTonight, "Every round loaded, added up");
+				if (s.CompareLeft.empty() && s.CompareRight.empty()) { CompareTab(CachedCtx(snap.Fights, index, s.CompareTonight, ForcedYou)); }
+				else { CompareTab(CachedCtx(snap.Fights, index, s.CompareTonight, s.CompareLeft, s.CompareRight)); }
 				ImGui::EndTabItem();
 			}
 			if (tab("Round", T_Round)) { RoundTab(CachedCtx(snap.Fights, index, false, ForcedYou)); ImGui::EndTabItem(); }
-			if (tab("Squad", T_Squad)) { SquadTab(c); ImGui::EndTabItem(); }
-			if (tab("Tonight", T_Tonight))
+			if (tab("Squad", T_Squad))
 			{
-				// the night doesn't depend on the round picked: a round you took no part in falls back to your latest one
-				int night = index;
-				if (snap.Fights[night]->Pov < 0) { for (int i = count - 1; i >= 0; i--) { if (snap.Fights[i]->Pov >= 0) { night = i; break; } } }
-				TonightTab(CachedCtx(snap.Fights, night, true, ForcedYou));
+				// one round only: its tables are the round's players (the Tonight switch did nothing; the user, 2026-09-30)
+				SquadTab(CachedCtx(snap.Fights, index, false, ForcedYou));
 				ImGui::EndTabItem();
 			}
 			ImGui::EndTabBar();
@@ -331,7 +486,7 @@ namespace Ui
 	void Options()
 	{
 		Session::Snapshot snap = Session::Get();
-		ImGui::Text("Log folder: %s", snap.Folder.string().c_str());
+		ImGui::Text("Log folder: %s", Session::PathText(snap.Folder).c_str());
 		ImGui::Text("Rounds loaded: %d", static_cast<int>(snap.Fights.size()));
 		ImGui::Checkbox("Show the Fight Review window", &ShowWindow);
 		if (ImGui::Checkbox("Show the small summary window", &ShowMini)) { SaveSettings(); }
