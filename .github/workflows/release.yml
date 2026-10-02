@@ -1,0 +1,32 @@
+# A release for every pushed tag "v<version>": builds FightReview.dll on GitHub's Windows machine and attaches it.
+# The tag must match the version in CMakeLists.txt (project(FightReview VERSION ...)), so Nexus shows the same one.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # to create the release and attach the DLL
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the version in CMakeLists.txt
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path CMakeLists.txt -Pattern 'project\(FightReview VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} doesn't match CMakeLists.txt version $version." }
+
+      - name: Build
+        shell: pwsh
+        run: ./scripts/build.ps1
+
+      - name: Create the release with the DLL
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" build/release/FightReview.dll --title "Fight Review ${{ github.ref_name }}" --generate-notes
