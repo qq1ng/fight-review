@@ -206,7 +206,7 @@ namespace Ui
 				out.HealToOthers += p.HealToOthers; out.DownedMs += p.DownedMs;
 				out.DownSpans.insert(out.DownSpans.end(), p.DownSpans.begin(), p.DownSpans.end());
 				out.StabEligible += p.StabEligible; out.StabCovered += p.StabCovered; out.StabReady += p.StabReady;
-				out.StabAllyNominalMs += p.StabAllyNominalMs; out.StabRedundantMs += p.StabRedundantMs; out.StabSpikes += p.StabSpikes; out.StabSpikeShare += p.StabSpikeShare;
+				out.DistortionUses += p.DistortionUses; out.DistortionInSpikes += p.DistortionInSpikes; out.StabAllyNominalMs += p.StabAllyNominalMs; out.StabRedundantMs += p.StabRedundantMs; out.StabSpikes += p.StabSpikes; out.StabSpikeShare += p.StabSpikeShare;
 				out.StabAllyMs += p.StabAllyMs; out.StabSelfMs += p.StabSelfMs;
 				out.CcDealt += p.CcDealt; out.Legends |= p.Legends; out.DownContribution += p.DownContribution;
 				out.ReviveUses.insert(out.ReviveUses.end(), p.ReviveUses.begin(), p.ReviveUses.end());
@@ -289,6 +289,50 @@ namespace Ui
 		int n = 0;
 		for (auto& [s, r] : p.Skills) { n += r.Interrupted + r.Cancelled; }
 		return n;
+	}
+
+	std::vector<InvulnUse> InvulnUses(const Fight& f, int64_t aFrom, int64_t aTo)
+	{
+		std::vector<InvulnUse> out;
+		for (const auto& g : f.InvulnGives)
+		{
+			if (g.Ms < aFrom || g.Ms > aTo || g.By < 0) { continue; }
+			auto it = std::find_if(out.begin(), out.end(), [&](const InvulnUse& u) { return u.By == g.By && std::abs(u.Ms - g.Ms) <= 300; });
+			if (it == out.end())
+			{
+				InvulnUse u;
+				u.Ms = g.Ms; u.Duration = g.Duration; u.By = g.By;
+				// the skill: a cast of theirs in the 1.5 s before of a skill that gives distortion, else just "Distortion"
+				// (the latest cast of any skill named an auto attack)
+				static const char* const kGivers[] = {"Tale of the August Queen", "Distortion", "Blurred Frenzy", "Bladesong Distortion"};
+				const Player& p = f.Players[g.By];
+				std::string skill = "Distortion";
+				int32_t bestMs = INT32_MIN;
+				for (auto& [sk, row] : p.Skills)
+				{
+					auto name = f.SkillNames.find(sk);
+					if (sk <= 0 || name == f.SkillNames.end() || std::none_of(std::begin(kGivers), std::end(kGivers), [&](const char* n) { return name->second == n; })) { continue; }
+					// Tale of the August Queen first (a Troubadour's own Distortion often follows it), else the latest
+					const bool tale = name->second == "Tale of the August Queen";
+					for (int32_t c : row.CastMs)
+					{
+						if (c < g.Ms - 1500 || c > g.Ms + 200) { continue; }
+						if (tale || (skill != "Tale of the August Queen" && c > bestMs)) { bestMs = c; skill = name->second; }
+					}
+				}
+				u.Skill = skill;
+				out.push_back(u);
+				it = out.end() - 1;
+			}
+			if (std::find(it->To.begin(), it->To.end(), g.To) == it->To.end()) { it->To.push_back(g.To); }
+		}
+		return out;
+	}
+
+	const Analysis::Fight::InvulnGive* InvulnOn(const Fight& f, int aPlayer, int32_t aMs)
+	{
+		for (const auto& g : f.InvulnGives) { if (g.To == aPlayer && g.Ms <= aMs && g.Ms + g.Duration > aMs) { return &g; } }
+		return nullptr;
 	}
 
 	int64_t SpikeOf(const std::vector<int64_t>& aPeaks, int64_t aMs)

@@ -153,6 +153,7 @@ namespace Analysis
 		// provider's that was still running); the enemy spikes they could act in and, summed, the share of their
 		// subgroup carrying their stability at each spike's peak
 		int64_t     StabAllyNominalMs = 0, StabRedundantMs = 0;
+		int         DistortionUses = 0, DistortionInSpikes = 0; // invulnerability used (Distortion, on others or 2 s+); of those, in enemy spikes
 		int         StabSpikes = 0;
 		double      StabSpikeShare = 0;
 		std::array<std::vector<std::pair<int32_t, int32_t>>, kBoons> BoonOn; // merged spans with the boon, any giver
@@ -214,6 +215,13 @@ namespace Analysis
 		std::vector<int32_t> OurStripsMs, OurCcMs;           // enemy boons we removed, CC we landed on enemy players
 		std::vector<int32_t> OurCleansesMs;                  // conditions we removed from allies
 		std::vector<int64_t> SupportPerS;                    // our healing and barrier per second (Healing Stats players only)
+		// Per second, who was invulnerable: a hit on them absorbed (distortion, Tale of the August Queen and the like).
+		// InvulnOurs: Players indexes; InvulnTheirs: Enemies indexes
+		std::vector<std::vector<int>> InvulnOurs, InvulnTheirs;
+		// Distortion put on one of ours (their own, or a Tale of the August Queen): when, how long, who gave it (Players index, -1 not
+		// one of ours) and who got it
+		struct InvulnGive { int32_t Ms = 0, Duration = 0; int By = -1, To = -1; int32_t Buff = 0; };
+		std::vector<InvulnGive> InvulnGives;
 		std::vector<int64_t> OutPerS, InPerS;                 // damage per second
 		std::vector<int64_t> ToPlayersPerS;                   // our damage to enemy players per second (our spikes)
 		std::array<double, T_Count> TimingBaseline{};         // share of fight seconds in each class

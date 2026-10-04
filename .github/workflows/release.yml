@@ -1,5 +1,6 @@
 # A release for every pushed tag "v<version>": builds FightReview.dll on GitHub's Windows machine and attaches it.
 # The tag must match the version in CMakeLists.txt (project(FightReview VERSION ...)), so Nexus shows the same one.
+# The release text is .github/release-notes.md: update its "What's new" before tagging.
 name: Release
 
 on:
@@ -29,4 +30,4 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" build/release/FightReview.dll --title "Fight Review ${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" build/release/FightReview.dll --title "Fight Review ${{ github.ref_name }}" --notes-file .github/release-notes.md

@@ -100,6 +100,10 @@ namespace Ui
 				v.push_back({"Blocks", "Enemy hits blocked", [](const Fight&, const Player& p) { return double(p.Blocks); }, whole, S_Defence});
 				v.push_back({"Invulns", "Enemy hits absorbed", [](const Fight&, const Player& p) { return double(p.Invulns); }, whole, S_Defence});
 				v.push_back({"CC taken", "Times crowd controlled", [](const Fight&, const Player& p) { return double(p.CcTaken); }, whole, S_Defence});
+				// invulnerability used in enemy spikes, of all uses (the user, 2026-10-03): Tale of the August Queen counts for
+				// whoever cast it
+				v.push_back({"Invuln in spikes", "Distortion used in enemy spikes", [](const Fight&, const Player& p) { return p.DistortionUses ? double(p.DistortionInSpikes) / p.DistortionUses : -1.0; },
+					[](const Fight&, const Player& p, double v) { return v < 0 ? std::string("-") : std::to_string(p.DistortionInSpikes) + " of " + std::to_string(p.DistortionUses); }, S_Defence});
 				for (int b = 0; b < Analysis::kBoons; b++)
 				{
 					unsigned sets = S_Boons | (b == 0 ? S_Damage : 0); // Support has CC covered for stability; boons in Boons

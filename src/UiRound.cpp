@@ -489,9 +489,9 @@ namespace Ui
 			{
 				std::vector<Bullet> spikes = {
 					{"Their spikes \xc2\xb7 our downs", std::to_string(v.EnemySpikes) + " \xc2\xb7 " + std::to_string(v.DownsInTheirs), v.DownsInTheirs > v.DownsInOurs,
-						"Enemy spikes, and our downs from 1 s before one to 4 s after"},
+						"Enemy spikes, and our downs from 3 s before one to 4 s after"},
 					{"Our spikes \xc2\xb7 their downs", std::to_string(v.OurSpikes) + " \xc2\xb7 " + std::to_string(v.DownsInOurs), v.DownsInOurs < v.DownsInTheirs,
-						"Our spikes, and enemy downs from 1 s before one to 4 s after"},
+						"Our spikes, and enemy downs from 3 s before one to 4 s after"},
 				};
 				if (!v.OnTimeList.empty()) { spikes.push_back({"Damage players on time", v.OnTimeList, false, "In the middle spike: damage centred within 1 s of its peak"}); }
 				std::vector<Bullet> stab = {
@@ -589,21 +589,101 @@ namespace Ui
 			double span = static_cast<double>(std::max<int64_t>(1, f.DurationMs));
 			auto x = [&](double ms) { return top.x + static_cast<float>(std::clamp(ms / span, 0.0, 1.0)) * width; };
 			// Rails: our marked skills above the graph, theirs below it (their picker sits under their rails, so adding
-			// our skills never pushes theirs away; the user, 2026-10-01)
-			const float rail = lh + 6, graphH = lh * 10;
-			float railsH = rail * s.Picked.size(), enemyH = rail * s.PickedEnemy.size();
-			float h = railsH + graphH + enemyH;
+			// our skills never pushes theirs away; the user, 2026-10-01). A rail opens into a row per player (per enemy),
+			// each use with its trail to its last hit: a well's pulses show as one line from the player's own cast (the
+			// user, 2026-10-02: the first activation per player was hard to read). Between the rails and the graph, a
+			// lane per side for invulnerability: who had a hit on them absorbed (Tale of the August Queen, distortion).
+			struct RailRow
+			{
+				int32_t Skill = 0;
+				bool Enemy = false, Sub = false;
+				std::string Label;
+				std::vector<std::pair<int32_t, int32_t>> Uses; // (use, its last hit)
+			};
+			// a use per run of hits under 1.5 s apart (a well pulses each second): its first hit and its last
+			auto runs = [](std::vector<int32_t> aMs)
+			{
+				std::sort(aMs.begin(), aMs.end());
+				std::vector<std::pair<int32_t, int32_t>> out;
+				for (int32_t ms : aMs)
+				{
+					if (out.empty() || ms - out.back().second > 1500) { out.push_back({ms, ms}); }
+					else { out.back().second = ms; }
+				}
+				return out;
+			};
+			std::vector<RailRow> ourRows, theirRows;
+			for (int32_t sk : s.Picked)
+			{
+				RailRow all;
+				all.Skill = sk;
+				std::map<const Player*, std::vector<int32_t>> byPlayer;
+				for (const Cast& k : CastsOf(f, sk, 0, f.DurationMs)) { all.Uses.push_back({k.Ms, k.Ms}); byPlayer[k.By].push_back(k.Ms); }
+				ourRows.push_back(all);
+				if (!s.RailOpen.count(sk)) { continue; }
+				std::vector<RailRow> subs;
+				for (auto& [p, casts] : byPlayer)
+				{
+					RailRow r;
+					r.Skill = sk; r.Sub = true; r.Label = p->Name;
+					std::vector<int32_t> hits;
+					for (const auto& h : p->HitsOut) { if (h.Skill == sk) { hits.push_back(h.Ms); } }
+					std::sort(hits.begin(), hits.end());
+					for (size_t i = 0; i < casts.size(); i++)
+					{
+						// its trail: the hits that follow it, each within 1.5 s of the one before, up to the next use
+						int32_t end = casts[i], next = i + 1 < casts.size() ? casts[i + 1] : INT32_MAX;
+						for (int32_t ms : hits)
+						{
+							if (ms < casts[i] || ms >= next) { continue; }
+							if (ms - end > (end == casts[i] ? 2500 : 1500)) { break; }
+							end = ms;
+						}
+						r.Uses.push_back({casts[i], end});
+					}
+					subs.push_back(r);
+				}
+				std::sort(subs.begin(), subs.end(), [](const RailRow& a, const RailRow& b) { return a.Uses.front().first < b.Uses.front().first; });
+				ourRows.insert(ourRows.end(), subs.begin(), subs.end());
+			}
+			for (int32_t sk : s.PickedEnemy)
+			{
+				RailRow all;
+				all.Skill = sk; all.Enemy = true;
+				for (const EnemyUse& u : EnemyUses(f, sk, 0, f.DurationMs)) { all.Uses.push_back({u.Ms, u.Ms}); }
+				theirRows.push_back(all);
+				if (!s.EnemyRailOpen.count(sk)) { continue; }
+				std::map<int, std::vector<int32_t>> byEnemy;
+				for (const Player& p : f.Players) { for (const auto& h : p.HitsIn) { if (h.Skill == sk && h.Enemy >= 0) { byEnemy[h.Enemy].push_back(h.Ms); } } }
+				std::vector<RailRow> subs;
+				for (auto& [en, hits] : byEnemy)
+				{
+					RailRow r;
+					r.Skill = sk; r.Enemy = true; r.Sub = true;
+					r.Label = f.Enemies[en].Spec + " " + std::to_string(en + 1);
+					r.Uses = runs(hits);
+					subs.push_back(r);
+				}
+				std::sort(subs.begin(), subs.end(), [](const RailRow& a, const RailRow& b) { return a.Uses.front().first < b.Uses.front().first; });
+				theirRows.insert(theirRows.end(), subs.begin(), subs.end());
+			}
+			const float rail = lh + 6, graphH = lh * 10, invH = lh * 0.9f;
+			float railsH = rail * ourRows.size(), enemyH = rail * theirRows.size();
+			float h = railsH + invH + graphH + invH + enemyH;
 			ImGui::SetCursorScreenPos(top);
 			ImGui::InvisibleButton("roundgraph", ImVec2(width, h));
 			bool hovered = ImGui::IsItemHovered();
-			float g0 = top.y + railsH, g1 = g0 + graphH, mid = g0 + graphH * 0.5f;
+			const ImVec2 after = ImGui::GetCursorScreenPos();
+			float inv0 = top.y + railsH, g0 = inv0 + invH, g1 = g0 + graphH, inv1 = g1, e0 = inv1 + invH, mid = g0 + graphH * 0.5f;
 			dl->AddRectFilled(top, ImVec2(top.x + width, top.y + h), kLaneBg);
-			// spikes: ours over our rails and the graph, with the enemies they downed; theirs over the lower half and their rails
+			// spikes: ours over our rails and our half of the graph, with the enemies they downed; theirs over their half and
+			// their rails; neither over the invulnerability lanes (the user, 2026-10-03)
 			for (const Spike& sp : v.Spikes)
 			{
 				if (sp.Ours)
 				{
-					dl->AddRectFilled(ImVec2(x(sp.T - 1500.0), top.y), ImVec2(x(sp.T + 1500.0), g1), kOurBand);
+					if (railsH > 0) { dl->AddRectFilled(ImVec2(x(sp.T - 1500.0), top.y), ImVec2(x(sp.T + 1500.0), inv0), kOurBand); }
+					dl->AddRectFilled(ImVec2(x(sp.T - 1500.0), g0), ImVec2(x(sp.T + 1500.0), mid), kOurBand);
 					if (sp.Downs > 0)
 					{
 						Mark(dl, ImVec2(x(sp.T - 1500.0) + 6, g0 + lh * 0.5f), lh * 0.3f, 3, kYou);
@@ -612,8 +692,12 @@ namespace Ui
 				}
 				else
 				{
-					dl->AddRect(ImVec2(x(double(sp.T - kSpikeBeforeMs)), mid), ImVec2(x(double(sp.T)), top.y + h), kEnemyBand); // build-up: its downs count
-					dl->AddRectFilled(ImVec2(x(double(sp.T)), mid), ImVec2(x(sp.T + 3000.0), top.y + h), kEnemyBand);
+					for (auto [y0, y1] : {std::pair<float, float>{mid, g1}, {e0, top.y + h}})
+					{
+						if (y1 <= y0) { continue; }
+						dl->AddRect(ImVec2(x(double(sp.T - kSpikeBeforeMs)), y0), ImVec2(x(double(sp.T)), y1), kEnemyBand); // build-up: its downs count
+						dl->AddRectFilled(ImVec2(x(double(sp.T)), y0), ImVec2(x(sp.T + 3000.0), y1), kEnemyBand);
+					}
 					if (sp.Downs > 0)
 					{
 						Mark(dl, ImVec2(x(double(sp.T)) + 6, g1 - lh * 0.5f), lh * 0.3f, 4, kEnemy);
@@ -621,41 +705,89 @@ namespace Ui
 					}
 				}
 			}
-			// a rail: the skill's name at the left, an icon per use; icons that would overlap become a count
-			auto drawRail = [&](float ry, int32_t sk, const std::vector<int32_t>& aMs, ImU32 aFrame, ImU32 aBadge)
+			// a rail: the skill's name at the left (a row per player: the name, indented), an icon per use (its trail to
+			// its last hit on a player's row); icons that would overlap become a count
+			ImU32 mutedCol = ImGui::GetColorU32(kMuted);
+			auto drawRail = [&](float ry, const RailRow& r)
 			{
+				ImU32 frame = r.Enemy ? kEnemy : 0, badge = r.Enemy ? kEnemy : kYou;
 				dl->AddLine(ImVec2(top.x, ry), ImVec2(top.x + width, ry), IM_COL32(0x22, 0x25, 0x2b, 255));
-				std::string name = SkillName(f, sk);
+				std::string name = SkillName(f, r.Skill);
 				dl->PushClipRect(ImVec2(origin.x, ry), ImVec2(top.x - 4, ry + rail), true);
-				SmallText(dl, ImVec2(origin.x, ry + 3), ImGui::GetColorU32(kMuted), name);
+				if (r.Sub) { SmallText(dl, ImVec2(origin.x + lh, ry + 3), mutedCol, r.Label); }
+				else
+				{
+					bool open = (r.Enemy ? s.EnemyRailOpen : s.RailOpen).count(r.Skill) > 0;
+					ImGui::RenderArrow(dl, ImVec2(origin.x, ry + 4), mutedCol, open ? ImGuiDir_Down : ImGuiDir_Right, 0.6f);
+					SmallText(dl, ImVec2(origin.x + lh * 0.8f, ry + 3), mutedCol, name);
+				}
 				dl->PopClipRect();
-				for (size_t a = 0; a < aMs.size();)
+				for (size_t a = 0; a < r.Uses.size();)
 				{
 					size_t b = a;
-					while (b < aMs.size() && x(aMs[b]) - x(aMs[a]) < lh) { b++; }
-					float cx = x(aMs[a]);
-					IconAt(dl, ImVec2(cx, ry + 3), lh, sk, name, aFrame);
+					while (b < r.Uses.size() && x(r.Uses[b].first) - x(r.Uses[a].first) < lh) { b++; }
+					float cx = x(r.Uses[a].first);
+					if (r.Sub)
+					{
+						for (size_t k = a; k < b; k++)
+						{
+							if (r.Uses[k].second > r.Uses[k].first) { dl->AddRectFilled(ImVec2(x(r.Uses[k].first), ry + rail * 0.5f - 1), ImVec2(x(r.Uses[k].second), ry + rail * 0.5f + 2), badge); }
+						}
+					}
+					IconAt(dl, ImVec2(cx, ry + 3), lh, r.Skill, name, frame);
 					if (b - a > 1)
 					{
 						std::string cnt = std::to_string(b - a);
-						dl->AddRectFilled(ImVec2(cx + lh - 2, ry + 1), ImVec2(cx + lh + ImGui::CalcTextSize(cnt.c_str()).x * 0.85f + 2, ry + lh * 0.8f), aBadge);
+						dl->AddRectFilled(ImVec2(cx + lh - 2, ry + 1), ImVec2(cx + lh + ImGui::CalcTextSize(cnt.c_str()).x * 0.85f + 2, ry + lh * 0.8f), badge);
 						SmallText(dl, ImVec2(cx + lh, ry), IM_COL32(16, 16, 17, 255), cnt);
 					}
 					a = b;
 				}
 			};
-			for (size_t i = 0; i < s.Picked.size(); i++)
+			for (size_t i = 0; i < ourRows.size(); i++) { drawRail(top.y + rail * i, ourRows[i]); }
+			for (size_t i = 0; i < theirRows.size(); i++) { drawRail(e0 + rail * i, theirRows[i]); }
+			// a click on a rail's name opens or closes its row per player
+			auto railButtons = [&](const std::vector<RailRow>& aRows, float aY, std::set<int32_t>& aOpen, int aId)
 			{
-				std::vector<int32_t> ms;
-				for (const Cast& k : CastsOf(f, s.Picked[i], 0, f.DurationMs)) { ms.push_back(k.Ms); }
-				drawRail(top.y + rail * i, s.Picked[i], ms, 0, kYou);
-			}
-			for (size_t i = 0; i < s.PickedEnemy.size(); i++)
+				for (size_t i = 0; i < aRows.size(); i++)
+				{
+					if (aRows[i].Sub) { continue; }
+					ImGui::SetCursorScreenPos(ImVec2(origin.x, aY + rail * i));
+					ImGui::PushID(aId + static_cast<int>(i));
+					if (ImGui::InvisibleButton("rail", ImVec2(std::max(1.0f, top.x - origin.x - 4), rail)))
+					{
+						if (aOpen.count(aRows[i].Skill)) { aOpen.erase(aRows[i].Skill); } else { aOpen.insert(aRows[i].Skill); }
+					}
+					if (ImGui::IsItemHovered()) { ImGui::SetTooltip(aOpen.count(aRows[i].Skill) ? "Click: one row for everyone" : (aRows[i].Enemy ? "Click: a row per enemy" : "Click: a row per player")); }
+					ImGui::PopID();
+				}
+			};
+			railButtons(ourRows, top.y, s.RailOpen, 9000);
+			railButtons(theirRows, e0, s.EnemyRailOpen, 9500);
+			ImGui::SetCursorScreenPos(after);
+			// invulnerability: a cell per second, darker the more of that side had a hit absorbed
+			auto invLane = [&](float ly, const std::vector<std::vector<int>>& aPerS, ImU32 aCol, const char* aLabel)
 			{
-				std::vector<int32_t> ms;
-				for (const EnemyUse& u : EnemyUses(f, s.PickedEnemy[i], 0, f.DurationMs)) { ms.push_back(u.Ms); }
-				drawRail(g1 + rail * i, s.PickedEnemy[i], ms, kEnemy, kEnemy);
+				SmallText(dl, ImVec2(origin.x, ly + 1), mutedCol, aLabel);
+				for (size_t sec = 0; sec < aPerS.size(); sec++)
+				{
+					size_t n = aPerS[sec].size();
+					if (!n) { continue; }
+					int alpha = static_cast<int>(std::min(255.0, 70 + 185.0 * std::min<size_t>(n, 10) / 10.0));
+					ImU32 col = (aCol & ~IM_COL32_A_MASK) | (static_cast<ImU32>(alpha) << IM_COL32_A_SHIFT);
+					dl->AddRectFilled(ImVec2(x(sec * 1000.0), ly + 2), ImVec2(std::max(x(sec * 1000.0) + 2, x((sec + 1) * 1000.0) - 1), ly + invH - 2), col);
+				}
+			};
+			std::vector<std::vector<int>> oursOn(f.InvulnOurs.size()); // per second: who had distortion running
+			for (const auto& gv : f.InvulnGives)
+			{
+				for (int32_t sec = std::max(0, gv.Ms / 1000); sec <= (gv.Ms + gv.Duration - 1) / 1000 && sec < static_cast<int32_t>(oursOn.size()); sec++)
+				{
+					if (std::find(oursOn[sec].begin(), oursOn[sec].end(), gv.To) == oursOn[sec].end()) { oursOn[sec].push_back(gv.To); }
+				}
 			}
+			invLane(inv0, oursOn, kYou, "Invulnerable");
+			invLane(inv1, f.InvulnTheirs, kEnemy, "Invulnerable");
 			// both sides' damage to players per second: ours up, theirs down (ours to enemy players only, as the spikes and
 			// their breakdown count it; it counted NPCs and siege too, so the breakdown's numbers looked low)
 			const std::vector<int64_t>& out = f.ToPlayersPerS;
@@ -689,18 +821,28 @@ namespace Ui
 				dl->AddLine(ImVec2(m.x, top.y), ImVec2(m.x, top.y + h), ImGui::GetColorU32(ImGuiCol_Text));
 				ImGui::BeginTooltip();
 				ImGui::Text("%s", Duration(sec * 1000LL).c_str());
-				int row = m.y < g0 ? static_cast<int>((m.y - top.y) / rail) : -1;
-				int enemyRow = m.y >= g1 ? static_cast<int>((m.y - g1) / rail) : -1;
-				if (row >= 0 && row < static_cast<int>(s.Picked.size()))
+				const RailRow* row = nullptr;
+				if (m.y < inv0) { size_t i = static_cast<size_t>((m.y - top.y) / rail); if (i < ourRows.size()) { row = &ourRows[i]; } }
+				else if (m.y >= e0) { size_t i = static_cast<size_t>((m.y - e0) / rail); if (i < theirRows.size()) { row = &theirRows[i]; } }
+				if (row && row->Sub)
 				{
-					for (const Cast& k : CastsOf(f, s.Picked[row], at - 1500, at + 1500))
+					ImGui::TextUnformatted((row->Label + ": " + SkillName(f, row->Skill)).c_str());
+					for (auto& [use, last] : row->Uses)
 					{
-						ImGui::Text("%s  %s: %s", Duration(k.Ms).c_str(), k.By->Name.c_str(), SkillName(f, s.Picked[row]).c_str());
+						if (last < at - 1500 || use > at + 1500) { continue; }
+						ImGui::Text("%s%s", Duration(use).c_str(), last > use ? (", hits until " + Duration(last) + " (" + Num((last - use) / 1000.0) + " s)").c_str() : "");
 					}
 				}
-				else if (enemyRow >= 0 && enemyRow < static_cast<int>(s.PickedEnemy.size()))
+				else if (row && !row->Enemy)
 				{
-					for (const EnemyUse& u : EnemyUses(f, s.PickedEnemy[enemyRow], at - 1500, at + 1500))
+					for (const Cast& k : CastsOf(f, row->Skill, at - 1500, at + 1500))
+					{
+						ImGui::Text("%s  %s: %s", Duration(k.Ms).c_str(), k.By->Name.c_str(), SkillName(f, row->Skill).c_str());
+					}
+				}
+				else if (row)
+				{
+					for (const EnemyUse& u : EnemyUses(f, row->Skill, at - 1500, at + 1500))
 					{
 						std::map<std::string, int> count;
 						for (int e : u.Enemies) { count[f.Enemies[e].Spec]++; }
@@ -709,6 +851,29 @@ namespace Ui
 						ImGui::Text("%s  %s on %d of ours, by %s", Duration(u.Ms).c_str(), Num(u.Damage).c_str(), static_cast<int>(u.Hit.size()),
 							specs.empty() ? "NPCs or siege" : specs.c_str());
 					}
+				}
+				else if (m.y >= inv0 && m.y < g0)
+				{
+					const auto& who = sec < static_cast<int>(oursOn.size()) ? oursOn[sec] : std::vector<int>();
+					ImGui::Text("%d of ours invulnerable", static_cast<int>(who.size()));
+					// who used it: the uses still running in this second
+					for (const InvulnUse& u : InvulnUses(f, sec * 1000LL - 6000, sec * 1000LL + 999))
+					{
+						if (u.Ms + u.Duration < sec * 1000) { continue; }
+						std::string on = u.To.size() == 1 && u.To[0] == u.By ? std::string("themselves") : std::to_string(u.To.size()) + (u.To.size() == 1 ? " ally" : " allies");
+						ImGui::Text("%s  %s (%s): %s, on %s, %s s", Duration(u.Ms).c_str(), f.Players[u.By].Name.c_str(), f.Players[u.By].Spec.c_str(), u.Skill.c_str(),
+							on.c_str(), Num(u.Duration / 1000.0).c_str());
+					}
+				}
+				else if (m.y >= inv1 && m.y < e0)
+				{
+					const auto& who = sec < static_cast<int>(f.InvulnTheirs.size()) ? f.InvulnTheirs[sec] : std::vector<int>();
+					ImGui::Text("%d enemies invulnerable (who used it isn't in our logs)", static_cast<int>(who.size()));
+					std::map<std::string, int> count;
+					for (int e : who) { count[f.Enemies[e].Spec]++; }
+					std::string specs;
+					for (auto& [sp, k] : count) { specs += (specs.empty() ? "" : ", ") + std::to_string(k) + " " + sp; }
+					if (!specs.empty()) { ImGui::TextColored(kMuted, "%s", specs.c_str()); }
 				}
 				else
 				{
@@ -732,6 +897,7 @@ namespace Ui
 			Key(kEnemyBand, "enemy spike");
 			ShapeKey(4, kEnemy, "allies it downed");
 			ImGui::NewLine();
+			ImGui::TextColored(kMuted, "Invulnerable: darker when more players were; hover for who used it. Click a marked skill's name for a row per player.");
 
 			// Every spike in order
 			ImGui::Spacing();
@@ -833,12 +999,13 @@ namespace Ui
 			float gw = width - labelW - 10;
 			// two plots on one clock, each with one scale (the user's v6 review: one plot with two scales misled): all
 			// the side's damage as a strip on top, the picked skills' damage below
-			const float stripH = lh * 3, gapH = 6;
+			const float stripH = lh * 3, gapH = 6, invH = lh * 0.9f;
 			const float gh = lh * 9;
 			ImDrawList* dl = ImGui::GetWindowDrawList();
 			ImVec2 top = ImGui::GetCursorScreenPos();
-			ImVec2 st(top.x + labelW, top.y + 2);            // the strip
-			ImVec2 g(top.x + labelW, st.y + stripH + gapH);  // the skills' plot
+			ImVec2 st(top.x + labelW, top.y + 2);                    // the strip
+			ImVec2 inv(top.x + labelW, st.y + stripH + 2);           // invulnerability of the side being hit
+			ImVec2 g(top.x + labelW, inv.y + invH + gapH);           // the skills' plot
 			auto x = [&](auto ms) { return g.x + static_cast<float>((static_cast<double>(ms) - static_cast<double>(from)) / double(to - from)) * gw; };
 			auto y = [&](double d) { return g.y + gh - static_cast<float>(d / mx) * (gh - 4); };
 			ImGui::InvisibleButton(aEnemy ? "enemyspikegraph" : "spikegraph", ImVec2(width, g.y - top.y + gh + lh * 1.5f));
@@ -856,6 +1023,29 @@ namespace Ui
 				dl->AddRectFilled(ImVec2(x(from + b * kBin) + 1, st.y + stripH - hgt), ImVec2(x(from + (b + 1) * kBin) - 1, st.y + stripH), aEnemy ? kEnemy : IM_COL32(0x5a, 0x5f, 0x68, 255));
 			}
 			SmallText(dl, ImVec2(st.x + 4, st.y + 1), mutedCol, (aEnemy ? "all their damage to us, peak " : "all our damage to players, peak ") + Num(allMx * kPerS) + " /s");
+			// invulnerability of the side being hit (the user, 2026-10-03): ours from who gave it, per quarter second;
+			// theirs from our hits they absorbed, per second
+			std::array<int, kBins> invCount{};
+			for (int b = 0; b < kBins; b++)
+			{
+				const int32_t at = static_cast<int32_t>(from + b * kBin + kBin / 2);
+				if (aEnemy)
+				{
+					std::set<int> on;
+					for (const auto& gv : f.InvulnGives) { if (gv.Ms <= at && gv.Ms + gv.Duration > at) { on.insert(gv.To); } }
+					invCount[b] = static_cast<int>(on.size());
+				}
+				else if (at >= 0 && at / 1000 < static_cast<int32_t>(f.InvulnTheirs.size())) { invCount[b] = static_cast<int>(f.InvulnTheirs[at / 1000].size()); }
+			}
+			dl->AddRectFilled(inv, ImVec2(inv.x + gw, inv.y + invH), kLaneBg);
+			for (int b = 0; b < kBins; b++)
+			{
+				if (!invCount[b]) { continue; }
+				int alpha = static_cast<int>(70 + 185.0 * std::min(invCount[b], 10) / 10.0);
+				ImU32 col = ((aEnemy ? kYou : kEnemy) & ~IM_COL32_A_MASK) | (static_cast<ImU32>(alpha) << IM_COL32_A_SHIFT);
+				dl->AddRectFilled(ImVec2(x(from + b * kBin) + 1, inv.y + 2), ImVec2(x(from + (b + 1) * kBin) - 1, inv.y + invH - 2), col);
+			}
+			SmallText(dl, ImVec2(top.x, inv.y + 1), mutedCol, aEnemy ? "Ours invulnerable" : "Enemies invulnerable");
 			if (picked.empty())
 			{
 				SmallText(dl, ImVec2(g.x + 8, g.y + gh * 0.5f - lh * 0.5f), mutedCol, aEnemy ? "Add enemy skills above, or click one in What hit us below, to see their damage here."
@@ -907,7 +1097,30 @@ namespace Ui
 					ly += lh * 2.3f;
 				}
 			}
-			if (hovered)
+			const float mouseY = ImGui::GetIO().MousePos.y;
+			if (hovered && mouseY >= inv.y && mouseY < inv.y + invH)
+			{
+				float mxp = ImGui::GetIO().MousePos.x;
+				if (mxp >= g.x && mxp < g.x + gw)
+				{
+					int b = std::clamp(static_cast<int>((mxp - g.x) / gw * kBins), 0, kBins - 1);
+					const int32_t at = static_cast<int32_t>(from + b * kBin + kBin / 2);
+					ImGui::BeginTooltip();
+					ImGui::Text("%s: %d %s invulnerable", Secs(at - peak).c_str(), invCount[b], aEnemy ? "of ours" : "enemies");
+					if (aEnemy)
+					{
+						for (const InvulnUse& u : InvulnUses(f, at - 6000, at))
+						{
+							if (u.Ms + u.Duration <= at) { continue; }
+							std::string on = u.To.size() == 1 && u.To[0] == u.By ? std::string("themselves") : std::to_string(u.To.size()) + (u.To.size() == 1 ? " ally" : " allies");
+							ImGui::Text("%s  %s (%s): %s, on %s", Secs(u.Ms - peak).c_str(), f.Players[u.By].Name.c_str(), f.Players[u.By].Spec.c_str(), u.Skill.c_str(), on.c_str());
+						}
+					}
+					else { ImGui::TextColored(kMuted, "Who used it isn't in our logs."); }
+					ImGui::EndTooltip();
+				}
+			}
+			else if (hovered)
 			{
 				float mxp = ImGui::GetIO().MousePos.x;
 				if (mxp >= g.x && mxp < g.x + gw)
@@ -1264,13 +1477,29 @@ namespace Ui
 					float hgt = static_cast<float>(a.Bins[b] / laneMx) * (rh - 2);
 					if (hgt > 0) { dl->AddRectFilled(ImVec2(lp.x + b * bwid + 1, lp.y + rh - hgt), ImVec2(lp.x + (b + 1) * bwid - 1, lp.y + rh), kEnemy); }
 				}
+				// invulnerable on them: a blue bar along the lane's top (who gave it in the reason)
+				const int idx = static_cast<int>(a.P - f.Players.data());
+				std::string invWhy;
+				for (const auto& gv : f.InvulnGives)
+				{
+					if (gv.To != idx || gv.Ms + gv.Duration < from || gv.Ms > to) { continue; }
+					float x0 = lp.x + static_cast<float>(std::clamp((gv.Ms - from) / double(to - from), 0.0, 1.0)) * laneW;
+					float x1 = lp.x + static_cast<float>(std::clamp((gv.Ms + gv.Duration - from) / double(to - from), 0.0, 1.0)) * laneW;
+					dl->AddRectFilled(ImVec2(x0, lp.y), ImVec2(std::max(x0 + 2, x1), lp.y + 3), kYou);
+					if (invWhy.empty())
+					{
+						std::string skill;
+						for (const InvulnUse& u : InvulnUses(f, gv.Ms - 300, gv.Ms + 300)) { if (u.By == gv.By) { skill = u.Skill; } }
+						invWhy = "invulnerable " + Secs(gv.Ms - sp.T) + " (" + (gv.By == idx ? std::string("own ") + skill : (gv.By >= 0 ? f.Players[gv.By].Name + "'s " : std::string()) + skill) + ")";
+					}
+				}
 				float cx = lp.x + laneW * 0.5f;
 				dl->AddLine(ImVec2(cx, lp.y), ImVec2(cx, lp.y + rh), ink, 1.5f);
 				std::string dmg = Num(a.Damage);
 				dl->AddText(ImVec2(p.x + dmgX - ImGui::CalcTextSize(dmg.c_str()).x, p.y + 2), ink, dmg.c_str());
-				// what stood out for them in the 3 s before the peak: stability taken, CC
-				std::string why;
-				for (const auto& st : a.P->StripsIn) { if (st.Boon == Analysis::kStability && st.Ms >= sp.T - 3000 && st.Ms <= sp.T + 1000) { why = std::string("stability ") + (st.Corrupted ? "corrupted " : "stripped ") + Secs(st.Ms - sp.T); break; } }
+				// what stood out for them in the 3 s before the peak: invulnerability, stability taken, CC
+				std::string why = invWhy;
+				for (const auto& st : a.P->StripsIn) { if (st.Boon == Analysis::kStability && st.Ms >= sp.T - 3000 && st.Ms <= sp.T + 1000) { why += (why.empty() ? "" : "; ") + std::string("stability ") + (st.Corrupted ? "corrupted " : "stripped ") + Secs(st.Ms - sp.T); break; } }
 				for (const auto& h : a.P->CcIn)
 				{
 					if (h.Ms < sp.T - 3000 || h.Ms > sp.T + 1000) { continue; }
@@ -1307,6 +1536,8 @@ namespace Ui
 		const Fight& f = *c.F;
 		State& s = S();
 		const View& v = ViewOf(c);
+		static int64_t shown = -1;
+		if (s.SpikeOpen != shown) { shown = s.SpikeOpen; if (shown >= 0) { ImGui::SetScrollY(0.0f); } }
 		if (s.SpikeOpen >= 0 && s.SpikeStamp == f.Stamp)
 		{
 			for (const Spike& sp : v.Spikes)

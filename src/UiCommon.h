@@ -66,6 +66,9 @@ namespace Ui
 		int         RoundView = 0;      // 0: spikes, 1: stability over time
 		std::vector<int32_t> Picked;    // skills marked on the round's time line and drawn in the spike breakdown
 		std::vector<int32_t> PickedEnemy; // enemy skills marked on the round's time line (their rails under the graph)
+		std::set<int32_t> RailOpen, EnemyRailOpen; // marked skills whose rail shows a row per player (per enemy)
+		std::set<std::string> CallPartOpen;           // Summary's calls: the parts opened in a card's detail ("card/part")
+		std::string CallOpen;                      // Summary, this round's calls: the card opened ("" none)
 		int64_t     SpikeOpen = -1;     // the spike broken down (its time), -1 = the round
 		bool        SpikeEnemy = false; // the spike broken down is theirs
 		std::string SpikeStamp;         // the round it belongs to
@@ -165,6 +168,19 @@ namespace Ui
 	constexpr int64_t kSpikeBeforeMs = 3000, kSpikeAfterMs = 4000;
 	// The spike (its peak, ms) a moment belongs to: the nearest peak whose window holds it; -1 none
 	int64_t SpikeOf(const std::vector<int64_t>& aPeaks, int64_t aMs);
+	// One use of invulnerability by one of ours: the gives of one player within 0.3 s (Tale of the August Queen puts
+	// Distortion on the whole group at once). Skill: what they cast then, else the buff's name.
+	struct InvulnUse { int32_t Ms = 0, Duration = 0; int By = -1; std::vector<int> To; std::string Skill; };
+	std::vector<InvulnUse> InvulnUses(const Fight& f, int64_t aFrom, int64_t aTo);
+	// This round's calls (the Summary): a card per key skill this squad brought, judged by its own rule (UiCalls.cpp).
+	// Group: 0 in our spikes, 1 before theirs, 2 after downs and both ways. Kind: 0 good, 1 partly, 2 off.
+	struct CallRow { std::string Who, Skill; int32_t Ms = 0; std::string Ref, What; bool Good = true; int32_t Offset = 0;
+		std::string Part, Section; const Player* By = nullptr; int32_t At = 0; }; // Ref: timed against that moment (a strip); Part, Section:
+	// headings in the detail; By, At: the player and the call's moment (hover: their skills around it)
+	struct CallCard { std::string Key, Name, Should, Line, Short, Verdict, Detail; int Group = 0, Kind = 1, Num = 0, Den = 0; int32_t Skill = 0; std::vector<CallRow> Rows; };
+	const std::vector<CallCard>& RoundCalls(const Fight& f);
+	// Was this player (Players index) invulnerable at that moment, and from whose use
+	const Analysis::Fight::InvulnGive* InvulnOn(const Fight& f, int aPlayer, int32_t aMs);
 	int64_t DeadMs(const Player& p);
 	const SkillRow* Row(const Player& p, int32_t aSkill);
 	// Share of a player's damage that landed within 2 s of one of our spikes (%), over several rounds; -1 without damage

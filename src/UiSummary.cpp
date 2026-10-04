@@ -265,9 +265,9 @@ namespace Ui
 				for (const auto& h : p.CcIn) { if (!HadBoonAt(p, Analysis::kStability, h.Ms - 50)) { bareKinds[h.Kind]++; } }
 				for (const auto& h : p.HitsIn) { allIn.push_back(&h); }
 			}
-			for (auto& [g, w] : f.GroupCcWindows) { x.CcOnUs += w; }
-			for (auto& [g, k] : f.GroupCcCovered) { x.CcOnUsBare -= k; }
-			x.CcOnUsBare += x.CcOnUs;
+			// every CC hit on one of ours (TopStats' received CC) and those with no stability on them in the 3 s before (as
+			// You counts it); it showed TopStats' 0.75 s CC windows, which read as too few (the user, 2026-10-04)
+			for (const Player& p : f.Players) { x.CcOnUs += p.CcTaken; x.CcOnUsBare += p.CcNoStab; }
 			int most = 0;
 			for (auto& [k, n] : bareKinds) { if (n > most) { most = n; x.CcKind = static_cast<Analysis::CcKind>(k); } }
 			x.TheirTop = Top(f, allIn, true);
@@ -649,7 +649,7 @@ namespace Ui
 				x.MostSg >= 0 && x.SquadDowns > 1 ? "most: sg " + std::to_string(x.MostSg) + " (" + std::to_string(x.MostSgDowns) + ")" : "", Triangle(false, kEnemy), !x.Downs.empty()};
 			them[1] = {std::to_string(x.Theirs.size()), spikesWord()};
 			Analysis::CcKind kind = x.CcKind;
-			them[2] = {std::to_string(x.CcOnUsBare) + " of " + std::to_string(x.CcOnUs), "CC on us, no stability", "",
+			them[2] = {std::to_string(x.CcOnUs), "CC on us, " + std::to_string(x.CcOnUsBare) + " with no stability just before", "",
 				[kind](ImDrawList* dl, ImVec2 p, float sz) { CcIconAt(dl, p, sz, kind); }};
 			them[3] = {std::to_string(x.TheirStrips), "boons stripped"};
 			them[4] = {Num(double(x.TheirDamage)), "damage \xc2\xb7 hover: top 10", "", nullptr, true};
@@ -849,5 +849,235 @@ namespace Ui
 			return h;
 		});
 		if (toYou) { s.SwitchTo = T_You; s.YouTonight = false; }
+
+		// ---- this round's calls: a card per key skill this squad brought, judged by its own rule; a card opens who and
+		// when right under its row of cards (the user's pick, A3, with A2's detail in place; 2026-10-04) -------------------
+		const std::vector<CallCard>& calls = RoundCalls(*c.F);
+		bool toRound2 = Section("CALLS", "Round >", [&](ImVec2 at, float width, ImVec2) -> float
+		{
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			ImU32 ink = ImGui::GetColorU32(ImGuiCol_Text), muted = ImGui::GetColorU32(kMuted);
+			const ImU32 kMid = IM_COL32(0xc9, 0xa2, 0x27, 255);
+			auto colOf = [&](int aKind) { return aKind == 0 ? kYou : aKind == 1 ? kMid : kEnemy; };
+			auto shapeOf = [](int aKind) { return aKind == 0 ? 1 : aKind == 1 ? 2 : 4; }; // circle, diamond, down: never colour alone
+			if (calls.empty())
+			{
+				dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), at, muted, "None of the key skills (wells, bursts, Tale, stability, revives...) came up this round.", nullptr, width);
+				return lh * 2;
+			}
+			// the answer: what went on the call, what didn't
+			std::string good, off;
+			for (const CallCard& k : calls)
+			{
+				if (k.Kind == 0) { good += (good.empty() ? "" : ", ") + k.Name; }
+				else { off += (off.empty() ? "" : ", ") + k.Name + " (" + k.Verdict + ")"; }
+			}
+			std::string answer = (good.empty() ? std::string() : "On the call: " + good + ". ") + (off.empty() ? std::string("Nothing off.") : "Off: " + off + ".");
+			float y = at.y;
+			dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(at.x, y), ink, answer.c_str(), nullptr, width);
+			y += ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, width, answer.c_str()).y + 6;
+			const char* groups[] = {"IN OUR SPIKES", "BEFORE THEIR SPIKES", "AFTER DOWNS, AND BOTH WAYS"};
+
+			// who and when for one card: its whole line, then its rows, under a heading per part (a Warrior's opener and
+			// melee burst) and a labelled divider per spike or call, so rows of different spikes don't run together
+			auto detail = [&](const CallCard& k)
+			{
+				const float aX = at.x, aW = width;
+				float top = y;
+				y += 4;
+				std::string head = k.Name + ": " + k.Line;
+				dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(aX + 6, y), ink, head.c_str(), nullptr, aW - 12);
+				y += ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, aW - 12, head.c_str()).y + 2;
+				dl->AddText(ImGui::GetFont(), SmallSize(), ImVec2(aX + 6, y), muted, k.Detail.c_str(), nullptr, aW - 12);
+				y += ImGui::GetFont()->CalcTextSizeA(SmallSize(), FLT_MAX, aW - 12, k.Detail.c_str()).y + 4;
+				// the skill column only when rows of one part differ in it (a part's one skill is in its heading)
+				bool oneSkill = std::all_of(k.Rows.begin(), k.Rows.end(), [&](const CallRow& r)
+				{
+					auto first = std::find_if(k.Rows.begin(), k.Rows.end(), [&](const CallRow& q) { return q.Part == r.Part; });
+					return r.Skill == first->Skill;
+				});
+				const float cTime = aX + 14, cWho = cTime + lh * 3.2f, cSkill = cWho + lh * 9.5f, cWhat = cSkill + (oneSkill ? 0 : lh * 11);
+				// parts (a Warrior's opener and melee burst) fold: a heading line each, with its count; open, its rows
+				std::vector<std::string> parts;
+				for (const CallRow& r : k.Rows) { if (!r.Part.empty() && std::find(parts.begin(), parts.end(), r.Part) == parts.end()) { parts.push_back(r.Part); } }
+				const bool folding = parts.size() > 1;
+				std::string part, section;
+				bool partOpen = true;
+				size_t shown = 0;
+				const float stripX = cWhat + lh * 4.5f, stripW2 = std::min(lh * 16, std::max(lh * 10, aX + aW - stripX - lh * 16));
+				for (const CallRow& r : k.Rows)
+				{
+					if (r.Part != part)
+					{
+						part = r.Part;
+						section.clear();
+						if (!part.empty())
+						{
+							int good = 0, all = 0;
+							for (const CallRow& q : k.Rows) { if (q.Part == part) { all++; good += q.Good; } }
+							std::string key = k.Key + "/" + part;
+							partOpen = !folding || s.CallPartOpen.count(key) > 0;
+							y += 2;
+							ImGui::SetCursorScreenPos(ImVec2(aX + 4, y));
+							ImGui::PushID(key.c_str());
+							bool clicked = folding && ImGui::InvisibleButton("part", ImVec2(aW - 8, lh + 2));
+							bool hov = folding && ImGui::IsItemHovered();
+							ImGui::PopID();
+							if (clicked) { if (partOpen) { s.CallPartOpen.erase(key); } else { s.CallPartOpen.insert(key); } partOpen = !partOpen; }
+							if (hov) { dl->AddRectFilled(ImVec2(aX + 4, y), ImVec2(aX + aW - 4, y + lh + 2), IM_COL32(0x1d, 0x26, 0x36, 255)); }
+							float hx = aX + 6;
+							if (folding) { ImGui::RenderArrow(dl, ImVec2(hx, y + 1), muted, partOpen ? ImGuiDir_Down : ImGuiDir_Right, 0.7f); hx += lh; }
+							dl->AddText(ImVec2(hx, y + 1), ink, part.c_str());
+							std::string count = std::to_string(good) + " of " + std::to_string(all) + " on the call";
+							dl->AddText(ImVec2(hx + ImGui::CalcTextSize(part.c_str()).x + 12, y + 1), good * 4 >= all * 3 ? kYou : good * 2 >= all ? kMid : kEnemy, count.c_str());
+							y += lh + 4;
+						}
+					}
+					if (!partOpen) { continue; }
+					if (shown++ >= 40) { continue; }
+					if (r.Section != section)
+					{
+						section = r.Section;
+						if (!section.empty())
+						{
+							// a divider with its label: "Wells at 0:23"
+							float tw = ImGui::GetFont()->CalcTextSizeA(SmallSize(), FLT_MAX, 0, section.c_str()).x;
+							dl->AddText(ImGui::GetFont(), SmallSize(), ImVec2(aX + 10, y), kYou, section.c_str());
+							dl->AddLine(ImVec2(aX + 16 + tw, y + lh * 0.5f), ImVec2(aX + aW - 8, y + lh * 0.5f), IM_COL32(0x3a, 0x67, 0xa6, 140));
+							y += lh + 1;
+						}
+					}
+					const bool strip = !r.Ref.empty();
+					if (r.Section != "Missed") { dl->AddText(ImVec2(cTime, y), muted, Duration(r.Ms).c_str()); }
+					dl->PushClipRect(ImVec2(cWho, y), ImVec2(cSkill - 6, y + lh), true);
+					dl->AddText(ImVec2(cWho, y), ink, r.Who.c_str());
+					dl->PopClipRect();
+					// a burst's player: their skills around the call, on hover (the user, 2026-10-04)
+					if (r.By && ImGui::IsMouseHoveringRect(ImVec2(cWho, y), ImVec2(cSkill - 6, y + lh)))
+					{
+						std::map<int32_t, std::pair<int, double>> bySkill; // skill -> hits, damage
+						double total = 0;
+						for (const auto& h : r.By->HitsOut) { if (h.Ms >= r.At - 3000 && h.Ms <= r.At + 4000) { bySkill[h.Skill].first++; bySkill[h.Skill].second += h.Damage; total += h.Damage; } }
+						std::vector<std::pair<double, int32_t>> order;
+						for (auto& [sk, v] : bySkill) { order.push_back({v.second, sk}); }
+						std::sort(order.rbegin(), order.rend());
+						ImGui::BeginTooltip();
+						ImGui::Text("%s, 3 s before to 4 s after %s: %s to players", r.Who.c_str(), Duration(r.At).c_str(), Num(total).c_str());
+						float sx = ImGui::GetCursorPosX();
+						ImGui::TextColored(kMuted, "Skill"); ImGui::SameLine(sx + lh * 13); ImGui::TextColored(kMuted, "Casts"); ImGui::SameLine(sx + lh * 16.5f); ImGui::TextColored(kMuted, "Hits");
+						ImGui::SameLine(sx + lh * 19.5f); ImGui::TextColored(kMuted, "Damage");
+						for (size_t i = 0; i < order.size() && i < 12; i++)
+						{
+							int32_t sk = order[i].second;
+							int casts = 0;
+							auto row = r.By->Skills.find(sk);
+							if (row != r.By->Skills.end()) { for (int32_t ms : row->second.CastMs) { casts += ms >= r.At - 3000 && ms <= r.At + 4000; } }
+							SkillIcon(sk, SkillName(*c.F, sk));
+							ImGui::TextUnformatted(SkillName(*c.F, sk).c_str());
+							ImGui::SameLine(sx + lh * 13); ImGui::Text("%d", casts);
+							ImGui::SameLine(sx + lh * 16.5f); ImGui::Text("%d", bySkill[sk].first);
+							ImGui::SameLine(sx + lh * 19.5f); ImGui::TextUnformatted(Num(order[i].first).c_str());
+						}
+						if (order.empty()) { ImGui::TextColored(kMuted, "No damage to players then."); }
+						ImGui::EndTooltip();
+					}
+					if (!oneSkill)
+					{
+						dl->PushClipRect(ImVec2(cSkill, y), ImVec2(cWhat - 6, y + lh), true);
+						dl->AddText(ImVec2(cSkill, y), muted, r.Skill.c_str());
+						dl->PopClipRect();
+					}
+					if (strip)
+					{
+						// timed against a moment: the offset, a -3 to +3 s strip with the on-the-call window, then any note
+						std::string offText = r.What, note;
+						if (size_t cut = offText.find("  "); cut != std::string::npos) { note = offText.substr(cut + 2); offText = offText.substr(0, cut); }
+						dl->AddText(ImVec2(cWhat, y), r.Good ? kYou : kEnemy, offText.c_str());
+						dl->AddRectFilled(ImVec2(stripX, y + 1), ImVec2(stripX + stripW2, y + lh - 1), IM_COL32(0x15, 0x17, 0x1b, 255));
+						for (float f2 : {-1.0f, 2.5f}) { float tx = stripX + stripW2 * (0.5f + f2 / 6); dl->AddLine(ImVec2(tx, y + 1), ImVec2(tx, y + lh - 1), IM_COL32(0x3b, 0x42, 0x50, 255)); }
+						dl->AddLine(ImVec2(stripX + stripW2 * 0.5f, y + 1), ImVec2(stripX + stripW2 * 0.5f, y + lh - 1), ink, 2.0f);
+						float mx = stripX + stripW2 * (0.5f + std::clamp(r.Offset / 6000.0f, -0.5f, 0.5f));
+						Mark(dl, ImVec2(mx, y + lh * 0.5f), lh * 0.3f, r.Good ? 0 : 4, r.Good ? kYou : kEnemy);
+						if (!note.empty())
+						{
+							dl->PushClipRect(ImVec2(stripX + stripW2 + 10, y), ImVec2(aX + aW - 6, y + lh), true);
+							dl->AddText(ImVec2(stripX + stripW2 + 10, y), note.find("NO SIGNET") != std::string::npos ? kEnemy : muted, note.c_str());
+							dl->PopClipRect();
+						}
+					}
+					else
+					{
+						// wraps (a list of missed spikes can be long)
+						dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(cWhat, y), r.Good ? ink : kEnemy, r.What.c_str(), nullptr, aX + aW - cWhat - 8);
+						y += ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, aX + aW - cWhat - 8, r.What.c_str()).y - lh;
+					}
+					y += lh + 2;
+				}
+				if (shown > 40) { dl->AddText(ImGui::GetFont(), SmallSize(), ImVec2(aX + 6, y), muted, ("and " + std::to_string(shown - 40) + " more").c_str()); y += lh; }
+				bool anyStrip = false;
+				for (const CallRow& r : k.Rows) { anyStrip |= !r.Ref.empty() && (!folding || s.CallPartOpen.count(k.Key + "/" + r.Part) > 0); }
+				if (anyStrip)
+				{
+					dl->AddText(ImGui::GetFont(), SmallSize(), ImVec2(stripX, y), muted, "-3 s \xc2\xb7 the moment \xc2\xb7 +3 s; on the call between the lines (-1 and +2.5 s)");
+					y += lh;
+				}
+				dl->AddRect(ImVec2(aX, top), ImVec2(aX + aW, y + 4), IM_COL32(0x3a, 0x67, 0xa6, 255));
+				y += 8;
+			};
+
+			// the cards, by when they should happen, as many to a row as fit a long skill name; an opened card's detail
+			// comes right after its row
+			const int cols = std::clamp(static_cast<int>(width / (lh * 15)), 3, 6);
+			const float gap = 4, cw = (width - gap * (cols - 1)) / cols, ch = lh * 3.1f;
+			for (int g = 0; g < 3; g++)
+			{
+				std::vector<const CallCard*> cards;
+				for (const CallCard& k : calls) { if (k.Group == g) { cards.push_back(&k); } }
+				if (cards.empty()) { continue; }
+				dl->AddText(ImGui::GetFont(), SmallSize(), ImVec2(at.x, y), muted, groups[g]);
+				y += lh + 1;
+				for (size_t row = 0; row < cards.size(); row += cols)
+				{
+					const CallCard* opened = nullptr;
+					for (size_t i = row; i < cards.size() && i < row + cols; i++)
+					{
+						const CallCard& k = *cards[i];
+						ImVec2 p(at.x + (i - row) * (cw + gap), y);
+						ImGui::SetCursorScreenPos(p);
+						ImGui::PushID(k.Key.c_str());
+						bool clicked = ImGui::InvisibleButton("call", ImVec2(cw, ch));
+						bool hov = ImGui::IsItemHovered();
+						ImGui::PopID();
+						bool isOpen = s.CallOpen == k.Key;
+						if (clicked) { s.CallOpen = isOpen ? std::string() : k.Key; isOpen = !isOpen; }
+						if (isOpen) { opened = &k; }
+						if (hov) { ImGui::SetTooltip("%s: %s.\n%s", k.Name.c_str(), k.Should.c_str(), isOpen ? "Click: close" : "Click: who and when"); }
+						ImU32 col = colOf(k.Kind);
+						dl->AddRectFilled(p, ImVec2(p.x + cw, p.y + ch), hov || isOpen ? IM_COL32(0x1d, 0x26, 0x36, 255) : IM_COL32(0x1b, 0x1d, 0x22, 255));
+						dl->AddRectFilled(p, ImVec2(p.x + 3, p.y + ch), col);
+						if (isOpen)
+						{
+							// joined to its detail below: open at the bottom
+							dl->AddLine(p, ImVec2(p.x + cw, p.y), kYou);
+							dl->AddLine(p, ImVec2(p.x, p.y + ch + gap), kYou);
+							dl->AddLine(ImVec2(p.x + cw, p.y), ImVec2(p.x + cw, p.y + ch + gap), kYou);
+						}
+						dl->PushClipRect(p, ImVec2(p.x + cw - 3, p.y + ch), true);
+						IconAt(dl, ImVec2(p.x + 7, p.y + 3), lh, k.Skill, k.Name);
+						dl->AddText(ImVec2(p.x + lh + 11, p.y + 3), ink, k.Name.c_str());
+						Mark(dl, ImVec2(p.x + 7 + lh * 0.35f, p.y + lh * 1.6f + 1), lh * 0.3f, shapeOf(k.Kind), col);
+						dl->AddText(ImGui::GetFont(), SmallSize(), ImVec2(p.x + 7 + lh * 0.9f, p.y + lh * 1.1f + 3), col, k.Verdict.c_str());
+						dl->AddText(ImGui::GetFont(), SmallSize(), ImVec2(p.x + 7, p.y + lh * 2.05f + 3), muted, k.Short.c_str());
+						dl->PopClipRect();
+					}
+					y += ch + gap;
+					if (opened) { detail(*opened); }
+				}
+				y += 2;
+			}
+			ImGui::SetCursorScreenPos(ImVec2(at.x, y));
+			return y - at.y;
+		});
+		if (toRound2) { s.SwitchTo = T_Round; s.RoundView = 0; s.SpikeOpen = -1; }
 	}
 }

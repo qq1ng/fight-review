@@ -561,6 +561,25 @@ int main(int argc, char** argv)
 	}
 	Ui::ForcedMetric = -1;
 	Ui::ForcedOpen = -1;
+	// the Summary's calls, closed and with a card open
+	Ui::ForcedTab = Ui::T_Summary;
+	save("summary_calls", true);
+	Ui::S().CallOpen = "warrior";
+	save("summary_calls_warrior", true);
+	Ui::S().CallPartOpen = {"warrior/SPEAR OPENER", "warrior/MELEE BURST"};
+	save("summary_calls_warrior_open", true);
+	Ui::S().CallPartOpen.clear();
+	Ui::S().CallOpen = "tale";
+	save("summary_calls_tale", true);
+	Ui::S().CallOpen = "renegade";
+	save("summary_calls_renegade", true);
+	Ui::S().CallOpen = "wells";
+	save("summary_calls_wells", true);
+	Ui::S().CallOpen.clear();
+	Ui::ForcedTab = Ui::T_Squad;
+	Ui::S().ColumnSet = 2; // Defence
+	save("squad_defence");
+	Ui::S().ColumnSet = -1;
 	for (size_t i = 0; i < hovers.size(); i++)
 	{
 		Ui::ForcedTab = Ui::T_Summary;
@@ -586,6 +605,9 @@ int main(int argc, char** argv)
 		std::sort(order.rbegin(), order.rend());
 		for (size_t i = 0; i < order.size() && i < 3; i++) { Ui::S().Picked.push_back(order[i].second); }
 		save("round_marked");
+		for (int32_t sk : Ui::S().Picked) { Ui::S().RailOpen.insert(sk); }
+		save("round_marked_open");
+		Ui::S().RailOpen.clear();
 		int64_t best = -1;
 		double most = -1;
 		for (int64_t t : shown.OurSpikesMs)
@@ -627,6 +649,9 @@ int main(int argc, char** argv)
 				std::sort(top.rbegin(), top.rend());
 				for (size_t i = 0; i < top.size() && i < 2; i++) { Ui::S().PickedEnemy.push_back(top[i].second); }
 				save("round_marked_both");
+				for (int32_t sk : Ui::S().PickedEnemy) { Ui::S().EnemyRailOpen.insert(sk); }
+				save("round_enemy_open");
+				Ui::S().EnemyRailOpen.clear();
 				// the same skills on the enemy spike's own graph
 				Ui::S().SpikeOpen = worst;
 				Ui::S().SpikeEnemy = true;

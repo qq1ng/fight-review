@@ -598,6 +598,8 @@ namespace Analysis
 		std::vector<int64_t> toPlayersPerS(seconds, 0); // our damage to enemy players: what our spikes are about
 		f.InPerS.assign(seconds, 0);
 		f.SupportPerS.assign(seconds, 0);
+		f.InvulnOurs.assign(seconds, {});
+		f.InvulnTheirs.assign(seconds, {});
 		std::unordered_map<uint64_t, std::vector<Window>> windows;
 		std::unordered_map<uint64_t, std::vector<std::pair<int64_t, int32_t>>> casts; // (time from start, skill)
 		// (time, target) of each strip / cleanse; (time, target, skill) of each heal and hit, for attribution
@@ -685,7 +687,11 @@ namespace Analysis
 				{
 					if (Player* p = player(e.Dst))
 					{
-						if (e.Result == RESULT_ABSORB) { p->Invulns++; }
+						if (e.Result == RESULT_ABSORB)
+						{
+							p->Invulns++;
+							if (int64_t bin = (t - start) / 1000; !e.Buff && bin >= 0 && bin < static_cast<int64_t>(seconds)) { f.InvulnOurs[bin].push_back(index[e.Dst]); }
+						}
 						else if (!e.Buff && e.Result == RESULT_EVADE)
 						{
 							p->Evades++;
@@ -693,6 +699,11 @@ namespace Analysis
 						}
 						else if (!e.Buff && e.Result == RESULT_BLOCK) { p->Blocks++; }
 					}
+				}
+				// our hits an enemy's invulnerability absorbed (their distortion, Tale of the August Queen): when they were
+				if (e.Result == RESULT_ABSORB && !e.Buff && foes.count(e.Dst))
+				{
+					if (int64_t bin = (t - start) / 1000; bin >= 0 && bin < static_cast<int64_t>(seconds)) { if (int en = enemy(e.Dst); en >= 0) { f.InvulnTheirs[bin].push_back(en); } }
 				}
 				if (e.Result == kResultCrowdControl && !e.Buff)
 				{
@@ -904,6 +915,14 @@ namespace Analysis
 					auto it = legendOf.find(e.Skill);
 					if (it == legendOf.end()) { it = legendOf.emplace(e.Skill, LegendOf(log.SkillName(e.Skill))).first; }
 					if (Player* p = it->second ? player(e.Dst) : nullptr) { p->Legends |= it->second; }
+				}
+				// invulnerability on one of ours, and who gave it: Distortion (a Mesmer's own, a Troubadour's Tale of the August
+				// Queen on the group). 30 Sept: on in 7 of 10 moments a hit on one of ours was absorbed. (Determined, 1 s,
+				// comes only with going down.)
+				if (e.StateChange == SC_BuffApply && e.Skill == 10243 && e.Value > 0)
+				{
+					auto to = index.find(e.Dst), by = index.find(e.Src);
+					if (to != index.end()) { f.InvulnGives.push_back({rel(t), e.Value, by != index.end() ? by->second : -1, to->second, static_cast<int32_t>(e.Skill)}); }
 				}
 				// on one of ours: a control effect (for the CC's type), a condition (for corruptions)
 				if (e.StateChange == SC_BuffApply && player(e.Dst))
@@ -1586,6 +1605,32 @@ namespace Analysis
 			}
 		}
 
+		// Distortion used by each of ours, and how many of those uses fell in an enemy spike (3 s before its peak to 4 s
+		// after, as downs count). A use: their gives within 0.3 s. It counts when it reached someone else (Tale of the
+		// August Queen) or lasted 2 s or more (a Mesmer's Distortion); the 1 s self procs of traits don't.
+		{
+			struct Use { int32_t Ms; int By; bool Others; int32_t Duration; };
+			std::vector<Use> uses;
+			for (const auto& g : f.InvulnGives)
+			{
+				if (g.By < 0) { continue; }
+				auto it = std::find_if(uses.begin(), uses.end(), [&](const Use& u) { return u.By == g.By && std::abs(u.Ms - g.Ms) <= 300; });
+				if (it == uses.end()) { uses.push_back({g.Ms, g.By, false, 0}); it = uses.end() - 1; }
+				it->Others |= g.To != g.By;
+				it->Duration = std::max(it->Duration, g.Duration);
+			}
+			for (const Use& u : uses)
+			{
+				if (!u.Others && u.Duration < 2000) { continue; }
+				Player& p = f.Players[u.By];
+				p.DistortionUses++;
+				p.DistortionInSpikes += std::any_of(f.TheirSpikesMs.begin(), f.TheirSpikesMs.end(), [&](int64_t t) { return u.Ms >= t - 3000 && u.Ms <= t + 4000; });
+			}
+		}
+		for (auto* perS : {&f.InvulnOurs, &f.InvulnTheirs})
+		{
+			for (auto& who : *perS) { std::sort(who.begin(), who.end()); who.erase(std::unique(who.begin(), who.end()), who.end()); }
+		}
 		// Boon spans merged per player; the commander
 		for (Player& p : f.Players)
 		{

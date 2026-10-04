@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(FightReview VERSION 0.1.0 LANGUAGES C CXX)
+project(FightReview VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,7 +38,7 @@ add_library(FightReview SHARED
     src/Icons.cpp
     src/Session.cpp
     src/SkillIcons.cpp
-    src/Ui.cpp src/UiCommon.cpp src/UiReview.cpp src/UiCompare.cpp src/UiSquad.cpp src/UiFight.cpp src/UiStability.cpp src/UiRound.cpp src/UiDeaths.cpp src/UiSummary.cpp
+    src/Ui.cpp src/UiCommon.cpp src/UiReview.cpp src/UiCompare.cpp src/UiSquad.cpp src/UiFight.cpp src/UiStability.cpp src/UiRound.cpp src/UiDeaths.cpp src/UiSummary.cpp src/UiCalls.cpp
 )
 target_include_directories(FightReview PRIVATE src external)
 target_compile_definitions(FightReview PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
@@ -62,7 +62,7 @@ add_library(imgui_checked STATIC
 )
 target_include_directories(imgui_checked PUBLIC external/imgui external tools/uishot)
 target_compile_definitions(imgui_checked PUBLIC IMGUI_USER_CONFIG="uishot_config.h")
-add_executable(fr_uishot tools/uishot/main.cpp src/Icons.cpp src/Session.cpp src/SkillIcons.cpp src/Ui.cpp src/UiCommon.cpp src/UiReview.cpp src/UiCompare.cpp src/UiSquad.cpp src/UiFight.cpp src/UiStability.cpp src/UiRound.cpp src/UiDeaths.cpp src/UiSummary.cpp)
+add_executable(fr_uishot tools/uishot/main.cpp src/Icons.cpp src/Session.cpp src/SkillIcons.cpp src/Ui.cpp src/UiCommon.cpp src/UiReview.cpp src/UiCompare.cpp src/UiSquad.cpp src/UiFight.cpp src/UiStability.cpp src/UiRound.cpp src/UiDeaths.cpp src/UiSummary.cpp src/UiCalls.cpp)
 target_include_directories(fr_uishot PRIVATE src external tools/uishot)
 target_compile_definitions(fr_uishot PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(fr_uishot PRIVATE fr_core imgui_checked d3d11 dxgi windowscodecs d3dcompiler winhttp)

@@ -2,11 +2,14 @@
 // prototype. Usage: frcheck <file.zevtc>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 #include <exception>
+#include <fstream>
 
 #include "Analysis.h"
 
@@ -242,8 +245,265 @@ int StabRed(int argc, char** argv)
 	return 0;
 }
 
+// --keyskills: which of our skills matter to spikes, over many rounds. Per spec and skill:
+//  offence (our spikes): damage to players within 1.5 s of our spike peaks, its share against the share of time those
+//    windows take (lift), how often a cast had another player's cast of it within 1 s (synced), and enemy downs in
+//    our spikes where it landed against where it didn't;
+//  defence (enemy spikes): share of casts from 3 s before an enemy peak to 1 s after, against time (lift), and our
+//    downs in enemy spikes where it was cast in the 3 s before the peak against where it wasn't.
+int KeySkills(int argc, char** argv)
+{
+	struct Off { double Damage = 0, InSpike = 0; int Casts = 0, Synced = 0; double SyncChance = 0, DownsWith = 0; int SpikesWith = 0; };
+	struct Def { int Casts = 0, InWindow = 0, Before = 0, After = 0; double DownsWith = 0; int SpikesWith = 0; double Stab = 0, Aegis = 0, Prot = 0, Resist = 0, Heal = 0, Cleanses = 0; };
+	std::map<std::pair<std::string, std::string>, Off> off; // (spec, skill)
+	std::map<std::pair<std::string, std::string>, Def> def;
+	double fightMs = 0, ourWindowMs = 0, theirWindowMs = 0, ourSpikeDowns = 0, theirSpikeDowns = 0;
+	int ourSpikes = 0, theirSpikes = 0, rounds = 0;
+	// logs, or @file: one log path per line (a month of logs is too long a command line)
+	std::vector<std::string> paths;
+	for (int i = 2; i < argc; i++)
+	{
+		if (argv[i][0] != '@') { paths.push_back(argv[i]); continue; }
+		std::ifstream in(argv[i] + 1);
+		for (std::string line; std::getline(in, line);) { if (!line.empty()) { paths.push_back(line); } }
+	}
+	for (const std::string& path : paths)
+	{
+		Analysis::Fight f;
+		try { f = Analysis::Analyse(path); } catch (...) { continue; }
+		if (f.DurationMs < 30000 || f.Players.size() < 10) { continue; }
+		rounds++;
+		fightMs += f.DurationMs;
+		ourWindowMs += 3000.0 * f.OurSpikesMs.size();
+		theirWindowMs += 4000.0 * f.TheirSpikesMs.size();
+		auto name = [&](int32_t sk) { auto it = f.SkillNames.find(sk); return it == f.SkillNames.end() ? std::to_string(sk) : it->second; };
+		auto inOurs = [&](int64_t ms) { for (int64_t t : f.OurSpikesMs) { if (std::llabs(ms - t) <= 1500) { return true; } } return false; };
+		// per spike: which skills landed (ours) or were cast in the build-up (theirs), and the downs in it
+		std::vector<std::set<std::pair<std::string, std::string>>> ourHad(f.OurSpikesMs.size()), theirHad(f.TheirSpikesMs.size());
+		std::vector<int> enemyDowns(f.OurSpikesMs.size()), ourDowns(f.TheirSpikesMs.size());
+		for (size_t k = 0; k < f.OurSpikesMs.size(); k++) { for (int32_t d : f.EnemyDownMs) { enemyDowns[k] += d >= f.OurSpikesMs[k] - 3000 && d <= f.OurSpikesMs[k] + 4000; } }
+		for (size_t k = 0; k < f.TheirSpikesMs.size(); k++) { for (int32_t d : f.SquadDownMs) { ourDowns[k] += d >= f.TheirSpikesMs[k] - 3000 && d <= f.TheirSpikesMs[k] + 4000; } }
+		// every cast of a skill by anyone, for "synced"
+		std::map<int32_t, std::vector<std::pair<int32_t, const Analysis::Player*>>> castsOf;
+		for (const auto& p : f.Players) { for (auto& [sk, row] : p.Skills) { if (sk > 0) { for (int32_t c : row.CastMs) { castsOf[sk].push_back({c, &p}); } } } }
+		for (const auto& p : f.Players)
+		{
+			for (const auto& h : p.HitsOut)
+			{
+				if (h.Skill <= 0) { continue; }
+				Off& o = off[{p.Spec, name(h.Skill)}];
+				o.Damage += h.Damage;
+				if (inOurs(h.Ms)) { o.InSpike += h.Damage; }
+				for (size_t k = 0; k < f.OurSpikesMs.size(); k++) { if (std::llabs(h.Ms - f.OurSpikesMs[k]) <= 1500) { ourHad[k].insert({p.Spec, name(h.Skill)}); } }
+			}
+			for (auto& [sk, row] : p.Skills)
+			{
+				if (sk <= 0 || row.CastMs.empty()) { continue; }
+				auto key = std::make_pair(p.Spec, name(sk));
+				Off& o = off[key];
+				Def& d = def[key];
+				for (int32_t c : row.CastMs)
+				{
+					o.Casts++;
+					o.Synced += std::any_of(castsOf[sk].begin(), castsOf[sk].end(), [&](const auto& x) { return x.second != &p && std::abs(x.first - c) <= 1000; });
+					// by chance: the others' casts of it spread evenly over the round, one within 1 s either side
+					double others = static_cast<double>(castsOf[sk].size() - row.CastMs.size());
+					o.SyncChance += 1.0 - std::exp(-others * 2000.0 / std::max<int64_t>(1, f.DurationMs));
+					d.Casts++;
+					bool in = false;
+					for (size_t k = 0; k < f.TheirSpikesMs.size(); k++)
+					{
+						if (c >= f.TheirSpikesMs[k] - 3000 && c <= f.TheirSpikesMs[k] + 1000) { in = true; }
+						if (c >= f.TheirSpikesMs[k] - 3000 && c < f.TheirSpikesMs[k]) { d.Before++; }
+						if (c >= f.TheirSpikesMs[k] && c <= f.TheirSpikesMs[k] + 2000) { d.After++; }
+						if (c >= f.TheirSpikesMs[k] - 3000 && c <= f.TheirSpikesMs[k]) { theirHad[k].insert(key); }
+					}
+					d.InWindow += in;
+				}
+				d.Stab += row.BoonSquadS[Analysis::kStability]; d.Aegis += row.BoonSquadS[7]; d.Prot += row.BoonSquadS[4]; d.Resist += row.BoonSquadS[10];
+				d.Heal += static_cast<double>(row.Heal + row.Barrier); d.Cleanses += row.Cleanses;
+			}
+		}
+		for (size_t k = 0; k < ourHad.size(); k++)
+		{
+			ourSpikes++; ourSpikeDowns += enemyDowns[k];
+			for (const auto& key : ourHad[k]) { off[key].SpikesWith++; off[key].DownsWith += enemyDowns[k]; }
+		}
+		for (size_t k = 0; k < theirHad.size(); k++)
+		{
+			theirSpikes++; theirSpikeDowns += ourDowns[k];
+			for (const auto& key : theirHad[k]) { def[key].SpikesWith++; def[key].DownsWith += ourDowns[k]; }
+		}
+	}
+	const double ourShare = ourWindowMs / std::max(1.0, fightMs), theirShare = theirWindowMs / std::max(1.0, fightMs);
+	std::printf("%d rounds (30 s+, 10+ of ours), %d of our spikes (%.0f%% of the time within 1.5 s of one), %d enemy spikes\n", rounds, ourSpikes, 100 * ourShare, theirSpikes);
+	std::printf("enemy downs per our spike %.2f; our downs per enemy spike %.2f\n\n", ourSpikeDowns / std::max(1, ourSpikes), theirSpikeDowns / std::max(1, theirSpikes));
+	std::printf("OFFENCE\tspec\tskill\tdamage\tin spikes\tshare in spikes\tlift\tcasts\tsynced\tsynced by chance\tspikes with it\tenemy downs with / without\n");
+	std::vector<std::pair<double, std::pair<std::string, std::string>>> order;
+	for (auto& [k, o] : off) { order.push_back({o.InSpike, k}); }
+	std::sort(order.rbegin(), order.rend());
+	for (size_t i = 0; i < order.size() && i < 400; i++)
+	{
+		const Off& o = off[order[i].second];
+		double share = o.Damage > 0 ? o.InSpike / o.Damage : 0;
+		double without = ourSpikes - o.SpikesWith > 0 ? (ourSpikeDowns - o.DownsWith) / (ourSpikes - o.SpikesWith) : 0;
+		std::printf("off\t%s\t%s\t%.0f\t%.0f\t%.0f%%\t%.2f\t%d\t%.0f%%\t%.0f%%\t%d\t%.2f / %.2f\n", order[i].second.first.c_str(), order[i].second.second.c_str(), o.Damage, o.InSpike, 100 * share,
+			share / std::max(1e-9, ourShare), o.Casts, o.Casts ? 100.0 * o.Synced / o.Casts : 0.0, o.Casts ? 100.0 * o.SyncChance / o.Casts : 0.0, o.SpikesWith, o.SpikesWith ? o.DownsWith / o.SpikesWith : 0.0, without);
+	}
+	std::printf("\nDEFENCE\tspec\tskill\tcasts\tin the 3 s before a peak\tlift\t2 s after\tgives\tspikes with it\tour downs with / without\n");
+	std::vector<std::pair<double, std::pair<std::string, std::string>>> dorder;
+	const double beforeShare = 3000.0 * theirSpikes / std::max(1.0, fightMs);
+	for (auto& [k, d] : def)
+	{
+		bool protects = d.Stab > 50 || d.Aegis > 20 || d.Prot > 50 || d.Resist > 50 || d.Heal > 200000 || d.Cleanses > 50 ||
+			k.second.find("Distortion") != std::string::npos || k.second.find("August Queen") != std::string::npos;
+		if (d.Casts >= 60 && protects) { dorder.push_back({double(d.Before), k}); }
+	}
+	std::sort(dorder.rbegin(), dorder.rend());
+	for (size_t i = 0; i < dorder.size() && i < 400; i++)
+	{
+		const Def& d = def[dorder[i].second];
+		double without = theirSpikes - d.SpikesWith > 0 ? (theirSpikeDowns - d.DownsWith) / (theirSpikes - d.SpikesWith) : 0;
+		std::string gives;
+		if (d.Stab > 50) { gives += " stab"; }
+		if (d.Aegis > 20) { gives += " aegis"; }
+		if (d.Prot > 50) { gives += " prot"; }
+		if (d.Resist > 50) { gives += " resist"; }
+		if (d.Heal > 200000) { gives += " heal"; }
+		if (d.Cleanses > 50) { gives += " cleanse"; }
+		std::printf("def\t%s\t%s\t%d\t%.0f%%\t%.2f\t%.0f%%\t%s\t%d\t%.2f / %.2f\n", dorder[i].second.first.c_str(), dorder[i].second.second.c_str(), d.Casts, 100.0 * d.Before / d.Casts,
+			double(d.Before) / d.Casts / std::max(1e-9, beforeShare), 100.0 * d.After / d.Casts, gives.c_str(), d.SpikesWith, d.SpikesWith ? d.DownsWith / d.SpikesWith : 0.0, without);
+	}
+	return 0;
+}
+
+// --revives @file: per spec and skill, over many rounds: revive skill uses (completed), with an ally down in reach,
+// and allies up within 3 s; and healing on downed allies (Healing Stats) per skill, with the get-ups it was the
+// biggest heal for (within 0.4 s of the get-up)
+int Revives(int argc, char** argv)
+{
+	struct Row { int Uses = 0, WithDown = 0, GotUp = 0; double DownHeal = 0; int GetUps = 0; };
+	std::map<std::pair<std::string, std::string>, Row> by;
+	std::vector<std::string> paths;
+	for (int i = 2; i < argc; i++)
+	{
+		if (argv[i][0] != '@') { paths.push_back(argv[i]); continue; }
+		std::ifstream in(argv[i] + 1);
+		for (std::string line; std::getline(in, line);) { if (!line.empty()) { paths.push_back(line); } }
+	}
+	int rounds = 0, getUps = 0;
+	for (const std::string& path : paths)
+	{
+		Analysis::Fight f;
+		try { f = Analysis::Analyse(path); } catch (...) { continue; }
+		rounds++;
+		auto name = [&](int32_t sk) { auto it = f.SkillNames.find(sk); return it == f.SkillNames.end() ? std::to_string(sk) : it->second; };
+		for (const auto& p : f.Players)
+		{
+			for (const auto& u : p.ReviveUses)
+			{
+				if (!u.Done) { continue; }
+				Row& r = by[{p.Spec, name(u.Skill)}];
+				r.Uses++; r.WithDown += u.DownNear > 0; r.GotUp += u.GotUp;
+			}
+			for (const auto& h : p.DownHealsIn) { if (h.By >= 0) { by[{f.Players[h.By].Spec, name(h.Skill)}].DownHeal += h.Amount; } }
+			for (size_t i = 0; i < p.DownSpans.size(); i++)
+			{
+				const auto& s = p.DownSpans[i];
+				bool died = s.Dead || (i + 1 < p.DownSpans.size() && p.DownSpans[i + 1].Dead && p.DownSpans[i + 1].From == s.To);
+				if (died || s.Dead) { continue; }
+				getUps++;
+				const Analysis::Player::DownHeal* best = nullptr;
+				for (const auto& h : p.DownHealsIn) { if (h.By >= 0 && std::abs(h.Ms - s.To) <= 400 && (!best || h.Amount > best->Amount)) { best = &h; } }
+				if (best) { by[{f.Players[best->By].Spec, name(best->Skill)}].GetUps++; }
+			}
+		}
+	}
+	std::printf("%d rounds, %d get-ups (not deaths)\n", rounds, getUps);
+	std::printf("spec\tskill\trevive uses\twith a down in reach\tallies up within 3 s\tdowned healing\tget-ups it was the biggest heal for\n");
+	std::vector<std::pair<double, std::pair<std::string, std::string>>> order;
+	for (auto& [k, r] : by) { if (r.Uses >= 5 || r.DownHeal >= 1 || r.GetUps >= 1) { order.push_back({r.DownHeal + 1e9 * r.Uses, k}); } }
+	std::sort(order.rbegin(), order.rend());
+	for (auto& [v, k] : order)
+	{
+		const Row& r = by[k];
+		std::printf("%s\t%s\t%d\t%d\t%d\t%.0f\t%d\n", k.first.c_str(), k.second.c_str(), r.Uses, r.WithDown, r.GotUp, r.DownHeal, r.GetUps);
+	}
+	return 0;
+}
+
+// --standard @file: Battle Standard (14419) cast near downed enemies: per cast, enemies downed within reach of the
+// caster then, and how many of them died within 4 s; against downed enemies near the caster at any other moment
+int Standard(int argc, char** argv)
+{
+	std::vector<std::string> paths;
+	for (int i = 2; i < argc; i++)
+	{
+		if (argv[i][0] != '@') { paths.push_back(argv[i]); continue; }
+		std::ifstream in(argv[i] + 1);
+		for (std::string line; std::getline(in, line);) { if (!line.empty()) { paths.push_back(line); } }
+	}
+	std::map<std::string, std::array<int, 4>> by; // spec -> casts, with a downed enemy in reach, enemies downed in reach, of them died within 4 s
+	int baseDown = 0, baseDied = 0; // every enemy down: died (anyone's finish)
+	for (const std::string& path : paths)
+	{
+		Analysis::Fight f;
+		try { f = Analysis::Analyse(path); } catch (...) { continue; }
+		auto at = [](const std::vector<Analysis::Player::Point>& aPos, int32_t ms) -> const Analysis::Player::Point*
+		{
+			const Analysis::Player::Point* best = nullptr;
+			for (const auto& p : aPos) { if (!best || std::abs(p.Ms - ms) < std::abs(best->Ms - ms)) { best = &p; } }
+			return best && std::abs(best->Ms - ms) <= 2000 ? best : nullptr;
+		};
+		for (const auto& en : f.Enemies)
+		{
+			for (size_t i = 0; i < en.DownSpans.size(); i++)
+			{
+				if (en.DownSpans[i].Dead) { continue; }
+				baseDown++;
+				baseDied += i + 1 < en.DownSpans.size() && en.DownSpans[i + 1].Dead && en.DownSpans[i + 1].From == en.DownSpans[i].To;
+			}
+		}
+		for (const auto& p : f.Players)
+		{
+			auto it = p.Skills.find(14419);
+			if (it == p.Skills.end()) { continue; }
+			for (int32_t c : it->second.CastMs)
+			{
+				auto& row = by[p.Spec];
+				row[0]++;
+				const auto* me = at(p.Pos, c);
+				if (!me) { continue; }
+				int near = 0, died = 0;
+				for (const auto& en : f.Enemies)
+				{
+					for (size_t i = 0; i < en.DownSpans.size(); i++)
+					{
+						const auto& s = en.DownSpans[i];
+						if (s.Dead || s.From > c + 2000 || s.To < c) { continue; } // downed at the cast, or within the 2 s cast
+						const auto* them = at(en.Pos, c);
+						if (!them || std::hypot(me->X - them->X, me->Y - them->Y) > 1200) { continue; }
+						near++;
+						died += i + 1 < en.DownSpans.size() && en.DownSpans[i + 1].Dead && en.DownSpans[i + 1].From == s.To && s.To <= c + 4000;
+					}
+				}
+				row[1] += near > 0; row[2] += near; row[3] += died;
+			}
+		}
+	}
+	std::printf("enemy downs that died (anyone's finish): %d of %d (%.0f%%)\n", baseDied, baseDown, 100.0 * baseDied / std::max(1, baseDown));
+	for (auto& [spec, r] : by)
+	{
+		std::printf("%s\tcasts %d\twith a downed enemy within 1200 %d\tdowned enemies in reach %d\tof them died within 4 s %d\n", spec.c_str(), r[0], r[1], r[2], r[3]);
+	}
+	return 0;
+}
+
 int main(int argc, char** argv)
 {
+	if (argc >= 3 && std::string(argv[1]) == "--standard") { return Standard(argc, argv); }
+	if (argc >= 3 && std::string(argv[1]) == "--revives") { return Revives(argc, argv); }
+	if (argc >= 3 && std::string(argv[1]) == "--keyskills") { return KeySkills(argc, argv); }
 	if (argc >= 3 && std::string(argv[1]) == "--stabred") { return StabRed(argc, argv); }
 	if (argc >= 5 && std::string(argv[1]) == "--others") { return Others(argc, argv); }
 	if (argc >= 3 && std::string(argv[1]) == "--selfstab") { return SelfStab(argc, argv); }
