@@ -5,24 +5,32 @@ down and why, how the spikes went on both sides, and how you did on your build a
 
 Everything comes from the saved logs, after the fight. Nothing is shown while you fight.
 
-![Summary](docs/images/summary.png)
+![The round's debrief at the left, your down step by step at the right](docs/images/overview.png)
 
 ## What it shows
 
-- **Summary**: the round at a glance, and one thing to work on next round.
-- **You**: your build's main jobs against the best player on the same spec, and what to fix first.
-- **Deaths**: every down in the round, what led to it, and whether a revive came.
-- **Round**: both sides' damage over the round, every spike, and a breakdown of each spike.
-- **Squad**: each subgroup and player: boons, stability, healing, cleanses, downs.
-- **Compare**: you next to another player, skill by skill.
+The round's debrief stays at the left; whatever you click in it opens at the right, and Back returns to what was open
+before.
 
-Most tabs can show this round or the whole evening. Ctrl+Shift+F opens the window; it is also in the Nexus quick
-access menu.
+- **Round**: the result, both sides' spikes on a strip, and how the round went against the rest of your night.
+- **You**: whether you went down and why, and your build's main jobs against the best player on your spec.
+- **Downs**: the squad by subgroup; click anyone for their down step by step, and whether a revive came.
+- **Enemy** and **Best this round**: the enemy's classes and worst spike, and the best of the squad in each job.
+- **Calls**: each key skill your squad used (wells, bursts, Tale of the August Queen, stability, revives...), judged
+  by its own rule, with who and when.
+- Behind them: both sides' damage over the round with every spike broken down, each subgroup and player, and you next
+  to anyone else, skill by skill.
+
+Many views can show this round or the whole evening. Ctrl+Shift+F opens the window; it is also in the Nexus quick
+access menu. A small window stays up while you play with the last round in a few lines; right-click it to pick the
+lines or its style, or to hide it (the addon's options in Nexus bring it back):
+
+![The small window](docs/images/small-window.png)
 
 | | |
 |---|---|
-| ![You](docs/images/you.png) | ![Deaths](docs/images/deaths.png) |
-| ![Round](docs/images/round.png) | ![Enemy spike](docs/images/enemy-spike.png) |
+| ![You against the best on your spec](docs/images/you.png) | ![The round: both sides' damage and every spike](docs/images/round.png) |
+| ![Calls: stability per subgroup at each enemy spike](docs/images/calls.png) | ![An enemy spike broken down](docs/images/enemy-spike.png) |
 
 ## Install
 
@@ -49,47 +57,53 @@ watching. It keeps its settings in `<GW2>\addons\FightReview\`.
 ## FAQ
 
 **What should I look at first after a round?**
-The Summary tab. Its last card names one thing to work on next round; the buttons on each card open the tab with the
-details.
+The debrief at the left, top to bottom: the result and the three reasons under it, then your own line, the downs and
+the calls. Hover anything for the story behind it, click it for the details; "?" at the top right explains each part.
 
-**What should I focus on in the You tab?**
-The three cards at the top: your build's main number and the two jobs where you were furthest behind the best player
-on your spec. Under them, "Fix first" lists the few things that made the most difference, each with you and them side
-by side; click one to see why. The short dark tick under a card's bar is your usual for the evening, so you can tell a bad round
-from a bad habit.
+**What should I focus on in You?**
+Click your line in the debrief ("why >"). The three cards at the top: your build's main number and the two jobs where
+you were furthest behind the best player on your spec. Under them, "Fix first" lists the few things that made the most
+difference, each with you and them side by side; click one to see why. The short dark tick under a card's bar is your
+usual for the evening, so you can tell a bad round from a bad habit.
 
 **Who am I compared with?**
 The best player on the same spec and build in that round (or that evening). If nobody else played your spec that
 round, your own best round of the evening on it. "Change" picks someone else.
 
 **How do I find out how someone died?**
-Open Deaths and pick the down on the left (they are grouped by the enemy spike they fell in). The tiles under the
-first line read left to right: what wore them down, their stability, the last CC, the burst, and whether they got up.
-The clock below shows the 6 s before the down: CC, boons they lost and stability they got on lanes at the top, their
-health and the damage they took underneath. Hover any moment to see what hit them then.
+Click them in the debrief's downs grid (a row per subgroup, a triangle for each down); Earlier and Later step through
+their downs, and "all downs >" lists every down of the round by enemy spike. The tiles under the first line read left
+to right: what wore them down, their stability, the last CC, the burst, and whether they got up. The clock below shows
+the 6 s before the down: CC, boons they lost and stability they got on lanes at the top, their health and the damage
+they took underneath. Hover any moment to see what hit them then.
 
-**What do I get from the Compare tab?**
-Pick two players and a measure (damage, healing, stability and so on). The first line says who did more and which
-skills made the difference. In the skill list, each bar starts at the middle line: to the left where you got more
-from a skill, to the right where they did. The columns after it say when each of you cast it and why the numbers
-differ (fewer casts, less per cast). The graph at the bottom shows both of you over the round, with the spikes behind.
+**What do I get from Compare?**
+Open it with "compare >" on your line, or click a name in Best this round or the squad list. Pick two players and a
+measure (damage, healing, stability and so on). The first line says who did more and which skills made the difference.
+In the skill list, each bar starts at the middle line: to the left where you got more from a skill, to the right where
+they did. The columns after it say when each of you cast it and why the numbers differ (fewer casts, less per cast).
+The graph at the bottom shows both of you over the round, with the spikes behind.
 
 **How do I read the round's time line?**
-Our damage goes up, theirs down, a bar per second. Blue bands are our spikes, orange ones theirs, with a triangle
-and the number of downs in each. The thin lanes marked "Invulnerable" show when players of each side were
-invulnerable; hover ours to see who used it. Mark a skill to put an icon on the line for every use, and click its
-name for a row per player.
+Click the result line in the debrief. Ally damage goes up, enemy damage down, a bar per second. Blue bands are ally
+spikes, orange ones enemy spikes, with a triangle and the number of downs in each; hover a spike for who went down and
+both sides' top skills, click it to break it down. The lane above shows when enemies were invulnerable; the lane under
+it shows when allies were (Tale of the August Queen, distortions), with bars for the enemy hits it absorbed. Hover a
+lane's name for what it shows. Mark a skill to put an icon on the line for every use, and click its name for a row
+per player.
 
 **How do I use a spike breakdown?**
-"Break down >" on any spike in the list. The top graph is all of that side's damage around the peak; pick skills (or
-click one in the list under it) to see when they landed. For our spikes, the players at the bottom show whose damage
-came on time and why someone's didn't. For enemy spikes, "Who they hit" shows who took the damage, and whether they
-had stability, were crowd controlled or were invulnerable at the time.
+Click a spike on the debrief's strip or the round's time line, or "Break down >" in the list. The top graph is all of
+that side's damage around the peak; pick skills (or click one in the list under it) to see when they landed. For ally
+spikes, the players at the bottom show whose damage came on time and why someone's didn't. For enemy spikes, "Who
+they hit" shows who took the damage, and whether they had stability, were crowd controlled or were invulnerable at the
+time.
 
 **How is a spike found?**
-A spike is a second where one side's damage to the other is the highest within 2 s either side, and at least 1.4
-times that side's usual damage per second and half its highest. Downs from 3 s before a spike's peak to 4 s after
-count for that spike.
+A spike is a run of seconds where one side's damage to the other stays at least 1.4 times that side's usual damage
+per second and half its highest; a one-second dip that stays above the usual doesn't end it. Its peak is its highest
+second. A long push is one spike ("0:02-0:14" in the list). Downs from 3 s before a spike to 4 s after it count for
+that spike.
 
 **How is stability judged?**
 - CC covered: of the CC that hit your subgroup, how often you had given stability that was still running (TopStats'
@@ -99,7 +113,8 @@ count for that spike.
   lower is better, but stacking before a push can be on purpose).
 
 **Can I look at the whole evening?**
-Yes: "This round / Tonight" at the top right of most tabs. The arrows and the list at the top pick another round.
+Yes: "Your night" at the top right shows the fixes that keep coming back, and "This round / Tonight" switches You,
+Compare and the squad view. The arrows and the list at the top pick another round.
 
 ## Built on
 
