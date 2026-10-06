@@ -20,6 +20,7 @@ namespace Ui
 {
 	bool ShowWindow = false;
 	int ForcedTab = -1;
+	int ForcedPane = -1;
 	int ForcedMetric = -1;
 	int ForcedOpen = -1;
 	std::string ForcedYou;
@@ -27,9 +28,13 @@ namespace Ui
 
 	namespace
 	{
-		// The summary window's style (right-click > Style), saved in settings.txt. Width or height 0: fit the text.
+		// The summary window's style (right-click > Style), saved in settings.txt. Width 0: 250 px (the user, 2026-10-04:
+		// ArcDPS' windows are about 250 x 250); height 0: as tall as its lines.
 		struct MiniStyle { bool Title = true, Background = true; float Alpha = 1.0f, Width = 0, Height = 0; };
 		MiniStyle s_Mini;
+		unsigned s_MiniLines = (1u << ML_Count) - 1; // right-click > Lines: a bit per MiniLine, all on at first
+		bool s_MiniStrip = true;                     // right-click > Lines: the round's strip (the user, 2026-10-05: not sure it's needed)
+		constexpr float kMiniWidth = 250;
 		bool s_MiniDirty = false; // changed in the menu, saved when the drag ends
 		bool s_Gameplay = true, s_MapOpen = false;
 	}
@@ -118,6 +123,8 @@ namespace Ui
 			else if (key == "summary_alpha") { s_Mini.Alpha = std::clamp(Number(value, 1.0f), 0.0f, 1.0f); }
 			else if (key == "summary_width") { s_Mini.Width = std::max(0.0f, Number(value, 0.0f)); }
 			else if (key == "summary_height") { s_Mini.Height = std::max(0.0f, Number(value, 0.0f)); }
+			else if (key == "summary_strip") { s_MiniStrip = value == "1"; }
+			else if (key == "summary_lines") { s_MiniLines = static_cast<unsigned>(std::strtoul(value.c_str(), nullptr, 10)) & ((1u << ML_Count) - 1); }
 			else if (key == "revive_order")
 			{
 				auto& order = S().ReviveOrder;
@@ -143,6 +150,8 @@ namespace Ui
 		out << "summary_alpha=" << s_Mini.Alpha << '\n';
 		out << "summary_width=" << s_Mini.Width << '\n';
 		out << "summary_height=" << s_Mini.Height << '\n';
+		out << "summary_lines=" << s_MiniLines << '\n';
+		out << "summary_strip=" << (s_MiniStrip ? 1 : 0) << '\n';
 		out << "revive_order=";
 		const auto& order = S().ReviveOrder;
 		for (size_t i = 0; i < order.size(); i++) { out << (i ? "," : "") << order[i]; }
@@ -201,13 +210,13 @@ namespace Ui
 			float lh = ImGui::GetTextLineHeight();
 			ImU32 ink = ImGui::GetColorU32(ImGuiCol_Text), muted = ImGui::GetColorU32(kMuted);
 			if (!aHeader) { dl->AddRectFilled(ImVec2(p.x, p.y + 1), ImVec2(p.x + 5, p.y + lh - 1), r.Colour); }
-			const float cols[] = {14, 70, 122, 200, 262};
+			const float cols[] = {14, 70, 122, 200, 262}, k = ImGui::GetFontSize() / 13.0f; // (laid out at 13 px)
 			const std::string texts[] = {r.Start, r.Length, r.Players, r.Downs, r.Result};
 			const char* heads[] = {"Start", "Length", "Players", "Downed", "Result"};
 			for (int i = 0; i < 5; i++)
 			{
 				const char* t = aHeader ? heads[i] : texts[i].c_str();
-				dl->AddText(ImVec2(p.x + cols[i], p.y), aHeader || i == 1 || i == 2 ? muted : ink, t);
+				dl->AddText(ImVec2(p.x + cols[i] * k, p.y), aHeader || i == 1 || i == 2 ? muted : ink, t);
 			}
 		}
 
@@ -231,7 +240,7 @@ namespace Ui
 			ImGui::SameLine(0, 4);
 			ImDrawList* dl = ImGui::GetWindowDrawList();
 			ImVec2 at = ImGui::GetCursorScreenPos();
-			const float width = 330;
+			const float width = std::max(330.0f, ImGui::GetFontSize() * 25.5f); // the result fits at the game's larger fonts
 			ImGui::SetNextItemWidth(width);
 			bool open = ImGui::BeginCombo("##round", "", ImGuiComboFlags_HeightLarge);
 			{
@@ -249,18 +258,19 @@ namespace Ui
 				if (ImGui::Selectable("Follow the latest round", s.Selected < 0)) { s.Selected = -1; s.OpenFix = -1; }
 				ImDrawList* pd = ImGui::GetWindowDrawList();
 				RoundLine(pd, ImGui::GetCursorScreenPos(), RoundFacts{}, true);
-				ImGui::Dummy(ImVec2(320, lh));
+				const float rowW = 320 * ImGui::GetFontSize() / 13.0f;
+				ImGui::Dummy(ImVec2(rowW, lh));
 				for (int i = count - 1; i >= 0; i--)
 				{
 					ImGui::PushID(i);
 					ImVec2 p = ImGui::GetCursorScreenPos();
-					if (ImGui::Selectable("##r", i == aIndex && s.Selected >= 0, 0, ImVec2(320, lh))) { s.Selected = i == count - 1 ? -1 : i; s.OpenFix = -1; }
+					if (ImGui::Selectable("##r", i == aIndex && s.Selected >= 0, 0, ImVec2(rowW, lh))) { s.Selected = i == count - 1 ? -1 : i; s.OpenFix = -1; }
 					RoundLine(pd, p, Facts(*aSnap.Fights[i]));
 					ImGui::PopID();
 				}
 				ImGui::EndCombo();
 			}
-			else if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Downed: theirs : ours"); }
+			else if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Downed: enemies : allies"); }
 			ImGui::SameLine(0, 4);
 			if (StepButton("##later", ImGuiDir_Right, aIndex < count - 1, "Later round")) { s.Selected = aIndex + 1 >= count - 1 ? -1 : aIndex + 1; s.OpenFix = -1; }
 			ImGui::SameLine(0, 10);
@@ -279,10 +289,24 @@ namespace Ui
 
 	namespace
 	{
-		// Right-click > Style, as on ArcDPS's windows: title bar, background and its opacity, width and height
+		// Right-click > Lines (what the window shows) and Style, as on ArcDPS's windows: title bar, background and its
+		// opacity, width and height
 		void MiniStyleMenu()
 		{
 			if (!ImGui::BeginPopupContextWindow("summary_menu")) { return; }
+			if (ImGui::BeginMenu("Lines"))
+			{
+				static const char* const kLines[ML_Count] = {"You: your down, or the CC you took", "Your rank on your spec", "Why: the round's first reason",
+					"Downs: how many, the subgroup hit hardest", "Enemy: the worst enemy spike", "Best this round: the most damage", "Calls: the ones that were off"};
+				for (int i = 0; i < ML_Count; i++)
+				{
+					bool on = (s_MiniLines >> i) & 1u;
+					if (ImGui::Checkbox(kLines[i], &on)) { s_MiniLines = on ? s_MiniLines | (1u << i) : s_MiniLines & ~(1u << i); s_MiniDirty = true; }
+				}
+				if (ImGui::Checkbox("The strip: both sides' damage, spikes and downs", &s_MiniStrip)) { s_MiniDirty = true; }
+				ImGui::TextColored(kMuted, "The result always shows.");
+				ImGui::EndMenu();
+			}
 			if (ImGui::BeginMenu("Style"))
 			{
 				bool changed = false;
@@ -291,11 +315,11 @@ namespace Ui
 				ImGui::SetNextItemWidth(140);
 				changed |= ImGui::SliderFloat("Background opacity", &s_Mini.Alpha, 0.0f, 1.0f, "%.2f");
 				ImGui::SetNextItemWidth(140);
-				changed |= ImGui::DragFloat("Width", &s_Mini.Width, 1.0f, 0.0f, 2000.0f, s_Mini.Width > 0 ? "%.0f" : "fit");
-				if (ImGui::IsItemHovered()) { ImGui::SetTooltip("0: as wide as the text; set, the text wraps to it"); }
+				changed |= ImGui::DragFloat("Width", &s_Mini.Width, 1.0f, 0.0f, 2000.0f, s_Mini.Width > 0 ? "%.0f" : "250");
+				if (ImGui::IsItemHovered()) { ImGui::SetTooltip("0: 250, as ArcDPS' windows"); }
 				ImGui::SetNextItemWidth(140);
 				changed |= ImGui::DragFloat("Height", &s_Mini.Height, 1.0f, 0.0f, 2000.0f, s_Mini.Height > 0 ? "%.0f" : "fit");
-				if (ImGui::IsItemHovered()) { ImGui::SetTooltip("0: as tall as the text"); }
+				if (ImGui::IsItemHovered()) { ImGui::SetTooltip("0: as tall as the lines"); }
 				if (changed)
 				{
 					s_Mini.Width = std::max(0.0f, s_Mini.Width);
@@ -310,22 +334,23 @@ namespace Ui
 		}
 	}
 
-	// The latest round in a few lines, always on screen if the player wants it; a click opens the full review
+	// The latest round in a few lines, always on screen if the player wants it (250 px wide, as ArcDPS' windows): the
+	// result, the strip, the lines picked; each has the debrief's hover, and a click opens the window there
 	void RenderMini()
 	{
 		if (!ShowMini || s_MapOpen) { return; }
 		Session::Snapshot snap = Session::Get();
 		SetDataVersion(snap.Version);
-		ImGuiWindowFlags flags = ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize;
+		ImGuiWindowFlags flags = ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar;
 		if (!s_Mini.Title) { flags |= ImGuiWindowFlags_NoTitleBar; }
 		if (!s_Mini.Background) { flags |= ImGuiWindowFlags_NoBackground; }
-		// width and height 0 fit the text; a set one is fixed (the text wraps to the width, a height cuts it)
-		if (s_Mini.Width > 0 && s_Mini.Height > 0) { ImGui::SetNextWindowSize(ImVec2(s_Mini.Width, s_Mini.Height), ImGuiCond_Always); flags |= ImGuiWindowFlags_NoScrollbar; }
+		// the width is fixed; a height of 0 fits the lines, a set one cuts them
+		const float width = s_Mini.Width > 0 ? s_Mini.Width : kMiniWidth;
+		if (s_Mini.Height > 0) { ImGui::SetNextWindowSize(ImVec2(width, s_Mini.Height), ImGuiCond_Always); }
 		else
 		{
 			flags |= ImGuiWindowFlags_AlwaysAutoResize;
-			ImVec2 least(s_Mini.Width, s_Mini.Height), most(s_Mini.Width > 0 ? s_Mini.Width : FLT_MAX, s_Mini.Height > 0 ? s_Mini.Height : FLT_MAX);
-			ImGui::SetNextWindowSizeConstraints(least, most);
+			ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0), ImVec2(width, FLT_MAX));
 		}
 		ImGui::SetNextWindowBgAlpha(s_Mini.Alpha);
 		bool shown = ImGui::Begin("Fight Review summary", s_Mini.Title ? &ShowMini : nullptr, flags);
@@ -337,26 +362,18 @@ namespace Ui
 			ImGui::End();
 			return;
 		}
-		if (s_Mini.Width > 0) { ImGui::PushTextWrapPos(0.0f); }
 		if (snap.Fights.empty())
 		{
+			ImGui::PushTextWrapPos(0.0f);
 			ImGui::TextColored(kMuted, "No rounds yet.");
-			if (s_Mini.Width > 0) { ImGui::PopTextWrapPos(); }
+			ImGui::PopTextWrapPos();
 			ImGui::End();
 			return;
 		}
 		int last = static_cast<int>(snap.Fights.size()) - 1;
-		const Fight& f = *snap.Fights[last];
-		{
-			RoundFacts r = Facts(f);
-			ImGui::PushStyleColor(ImGuiCol_Text, kMuted);
-			ImGui::TextUnformatted((r.Start + "  " + r.Length + "  " + r.Players + "  " + r.Result + ", " + r.Downs).c_str());
-			ImGui::PopStyleColor();
-		}
-		const Ctx& c = CachedCtx(snap.Fights, last, false);
-		for (const std::string& line : SummaryWindowLines(c)) { ImGui::TextUnformatted(line.c_str()); }
-		if (ImGui::SmallButton("Open the summary")) { ShowWindow = true; S().Selected = -1; S().SwitchTo = T_Summary; }
-		if (s_Mini.Width > 0) { ImGui::PopTextWrapPos(); }
+		const Ctx& c = CachedCtx(snap.Fights, last, false, ForcedYou);
+		// over the game with no background, the text gets a shadow
+		SmallWindow(c, width - 2 * ImGui::GetStyle().WindowPadding.x, s_MiniLines, !s_Mini.Background || s_Mini.Alpha < 0.5f, s_MiniStrip);
 		ImGui::End();
 	}
 
@@ -402,13 +419,145 @@ namespace Ui
 
 	namespace
 	{
+		// The old tabs as panes: a link inside a pane still asks for a tab (SwitchTo), the render harness too (ForcedTab)
+		int PaneOf(int aTab)
+		{
+			State& s = S();
+			switch (aTab)
+			{
+			case T_You: return s.YouTonight ? P_Night : P_You;
+			case T_Deaths:
+				if (s.DeathSpike >= 0) { s.DeathFilter = 4; return P_Downs; } // their spike's downs, from the Round pane
+				if (s.DeathFilter == 3) { return P_Revives; }
+				return s.DeathFilter == 1 || !s.DeathKey.empty() ? P_Down : P_Downs;
+			case T_Compare: return P_Compare;
+			case T_Round: return P_Round;
+			case T_Squad: return P_Squad;
+			default: return P_Home;
+			}
+		}
+
+		// The right side's top line: where you are, and the way back
+		std::string PaneTitle(const Ctx& c)
+		{
+			const State& s = S();
+			switch (s.Shown)
+			{
+			case P_Down:
+			{
+				// the key: round/account/ms
+				size_t a = s.DeathKey.find('/'), b = s.DeathKey.rfind('/');
+				if (a == std::string::npos || b <= a) { return "A down, step by step"; }
+				std::string account = s.DeathKey.substr(a + 1, b - a - 1);
+				int32_t ms = std::atoi(s.DeathKey.c_str() + b + 1);
+				for (const Player& p : c.F->Players)
+				{
+					if (p.Account != account) { continue; }
+					return (p.Pov || &p == c.MeRaw ? std::string("Your down") : p.Name + "'s down") + " at " + Duration(ms) + ", step by step";
+				}
+				return "A down, step by step";
+			}
+			case P_Downs: return "Ally downs this round";
+			case P_Revives: return "Revives and your revive order";
+			case P_Round:
+				if (s.SpikeOpen >= 0 && s.SpikeStamp == c.F->Stamp) { return std::string(s.SpikeEnemy ? "Enemy spike at " : "Ally spike at ") + Duration(s.SpikeOpen); }
+				return s.RoundView == 1 ? "The round: stability over time" : "The round: both sides' damage, skills marked";
+			case P_You: return "You against your spec, this round";
+			case P_Night: return "Your night: what keeps coming back";
+			case P_Compare: return "Compare two players";
+			case P_Squad: return "Every player this round";
+			case P_Calls: return "The calls: who and when";
+			case P_Help: return "How to read the left side";
+			default: return "";
+			}
+		}
+
+		void GoBack()
+		{
+			State& s = S();
+			if (s.Back.empty()) { return; }
+			State::Step b = s.Back.back();
+			s.Back.pop_back();
+			s.Shown = b.Shown;
+			s.SpikeOpen = b.SpikeOpen;
+			s.SpikeEnemy = b.SpikeEnemy;
+			s.DeathKey = b.DeathKey;
+			s.DeathFilter = b.DeathFilter;
+			s.RoundView = b.RoundView;
+			s.DeathPlayer = b.DeathPlayer;
+		}
+
+		// The right side: the pane picked in the debrief (or a link in another pane), under a line with Back
+		void Inspector(const Session::Snapshot& aSnap, int aIndex)
+		{
+			State& s = S();
+			const int count = static_cast<int>(aSnap.Fights.size());
+			const Ctx& c = CachedCtx(aSnap.Fights, aIndex, false, ForcedYou);
+			// Home: your down if you went down, else the round
+			if (s.Shown == P_Home)
+			{
+				std::string key = YourDownKey(c);
+				if (!key.empty()) { s.Shown = P_Down; s.DeathKey = key; s.DeathFilter = 1; s.DeathSpike = -1; }
+				else { s.Shown = P_Round; s.SpikeOpen = -1; s.RoundView = 0; }
+			}
+			{
+				const bool back = !s.Back.empty();
+				if (!back) { ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.4f); }
+				if (ImGui::SmallButton("< Back") && back) { GoBack(); }
+				if (!back) { ImGui::PopStyleVar(); }
+				else if (ImGui::IsItemHovered()) { ImGui::SetTooltip("To what was open before"); }
+				ImGui::SameLine(0, 10);
+				ImGui::TextUnformatted(PaneTitle(c).c_str());
+				// You and your night flip as before (This round / Tonight)
+				if (s.Shown == P_You || s.Shown == P_Night)
+				{
+					ImGui::SameLine();
+					bool night = s.Shown == P_Night;
+					ScopeSwitch("you", night, "Your night: the fixes that keep coming back, round by round");
+					if (night != (s.Shown == P_Night)) { Go(night ? P_Night : P_You); }
+				}
+				else if (s.Shown == P_Compare)
+				{
+					ImGui::SameLine();
+					ScopeSwitch("compare", s.CompareTonight, "Every round loaded, added up");
+				}
+			}
+			ImGui::Separator();
+			ImGui::BeginChild("pane", ImVec2(0, 0), false);
+			switch (s.Shown)
+			{
+			case P_Down: DeathsTab(c, DM_Detail); break;
+			case P_Downs: DeathsTab(c, DM_List); break;
+			case P_Revives: DeathsTab(c, DM_Revives); break;
+			case P_You: ReviewTab(c); break;
+			case P_Night:
+			{
+				// the night doesn't depend on the round picked: a round you took no part in falls back to your latest one
+				int night = aIndex;
+				if (aSnap.Fights[night]->Pov < 0) { for (int i = count - 1; i >= 0; i--) { if (aSnap.Fights[i]->Pov >= 0) { night = i; break; } } }
+				TonightTab(CachedCtx(aSnap.Fights, night, true, ForcedYou));
+				break;
+			}
+			case P_Compare:
+				if (s.CompareLeft.empty() && s.CompareRight.empty()) { CompareTab(CachedCtx(aSnap.Fights, aIndex, s.CompareTonight, ForcedYou)); }
+				else { CompareTab(CachedCtx(aSnap.Fights, aIndex, s.CompareTonight, s.CompareLeft, s.CompareRight)); }
+				break;
+			// one round only: its tables are the round's players (the Tonight switch did nothing; the user, 2026-09-30)
+			case P_Squad: SquadTab(c); break;
+			case P_Calls: CallsView(c); break;
+			case P_Help: HelpView(); break;
+			default: RoundTab(c); break;
+			}
+			ImGui::EndChild();
+		}
+
 	void RenderAll()
 	{
 		if (!s_Gameplay) { s_Hovered = false; return; }
 		RenderMini();
 		if (!ShowWindow) { s_Hovered = false; return; }
 		ApplyWheel();
-		ImGui::SetNextWindowSize(ImVec2(980, 760), ImGuiCond_FirstUseEver);
+		ImGui::SetNextWindowSize(ImVec2(1150, 680), ImGuiCond_FirstUseEver);
 		bool open = ImGui::Begin(kWindowName, &ShowWindow);
 		s_Window = ImGui::GetCurrentWindow();
 		{
@@ -432,52 +581,55 @@ namespace Ui
 		int index = s.Selected < 0 || s.Selected >= count ? count - 1 : s.Selected;
 
 		HeaderRow(snap, index);
+		{
+			// at the right: your night, and how to read the window
+			const ImGuiStyle& st = ImGui::GetStyle();
+			float w = ImGui::CalcTextSize("Your night").x + ImGui::CalcTextSize("?").x + st.FramePadding.x * 4 + st.ItemSpacing.x;
+			ImGui::SameLine();
+			ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowContentRegionMax().x - w));
+			auto button = [](const char* aLabel, bool aOn, const char* aTip)
+			{
+				if (aOn) { ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive)); }
+				bool clicked = ImGui::Button(aLabel);
+				if (aOn) { ImGui::PopStyleColor(); }
+				if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", aTip); }
+				return clicked;
+			};
+			if (button("Your night", s.Shown == P_Night, "The fixes that keep coming back, round by round")) { Go(P_Night); }
+			ImGui::SameLine();
+			if (button("?", s.Shown == P_Help, "How to read the left side")) { Go(P_Help); }
+		}
 		if (!snap.Status.empty()) { ImGui::TextColored(kMuted, "%s", snap.Status.c_str()); }
 
-		// a new round while following the latest: open on its Summary (the v6 design)
+		// a new round while following the latest: open on it, your down or the round at the right (the v6 design)
 		static int seen = 0;
 		// (not while the logs on disk load at start: they come in one by one)
-		if (count > seen && seen > 0 && !snap.Loading && s.Selected < 0 && s.SwitchTo < 0) { s.SwitchTo = T_Summary; }
+		if (count > seen && seen > 0 && !snap.Loading && s.Selected < 0 && s.SwitchTo < 0 && !s.KeepPane) { s.Shown = P_Home; s.Back.clear(); }
 		seen = count;
-		int want = ForcedTab >= 0 ? ForcedTab : s.SwitchTo;
-		s.SwitchTo = -1;
-		auto tab = [want](const char* aName, int aIndex)
+		s.KeepPane = false;
+		// another round: what Back holds belongs to the one before
+		static std::string stamp;
+		if (snap.Fights[index]->Stamp != stamp) { s.Back.clear(); stamp = snap.Fights[index]->Stamp; }
+		if (s.SwitchTo >= 0) { Go(PaneOf(s.SwitchTo)); s.SwitchTo = -1; }
+		if (ForcedPane >= 0) { s.Shown = ForcedPane; }
+		else if (ForcedTab >= 0) { s.Shown = PaneOf(ForcedTab); }
+
+		// the debrief at the left (as wide as the v10 design's 412 px at the user's font), the pane at the right
+		const float lh = ImGui::GetTextLineHeight();
+		const float avail = ImGui::GetContentRegionAvail().x;
+		const float left = std::floor(std::min(lh * 31.0f, avail * 0.45f));
+		ImGui::BeginChild("debrief", ImVec2(left, 0), false);
+		Debrief(CachedCtx(snap.Fights, index, false, ForcedYou));
+		ImGui::EndChild();
 		{
-			return ImGui::BeginTabItem(aName, nullptr, want == aIndex ? ImGuiTabItemFlags_SetSelected : 0);
-		};
-		if (ImGui::BeginTabBar("tabs"))
-		{
-			if (tab("Summary", T_Summary)) { SummaryTab(CachedCtx(snap.Fights, index, false, ForcedYou)); ImGui::EndTabItem(); }
-			if (tab("You", T_You))
-			{
-				ScopeSwitch("you", s.YouTonight, "Your night: the fixes that keep coming back, round by round");
-				if (s.YouTonight)
-				{
-					// the night doesn't depend on the round picked: a round you took no part in falls back to your latest one
-					int night = index;
-					if (snap.Fights[night]->Pov < 0) { for (int i = count - 1; i >= 0; i--) { if (snap.Fights[i]->Pov >= 0) { night = i; break; } } }
-					TonightTab(CachedCtx(snap.Fights, night, true, ForcedYou));
-				}
-				else { ReviewTab(CachedCtx(snap.Fights, index, false, ForcedYou)); }
-				ImGui::EndTabItem();
-			}
-			if (tab("Deaths", T_Deaths)) { DeathsTab(CachedCtx(snap.Fights, index, false, ForcedYou)); ImGui::EndTabItem(); }
-			if (tab("Compare", T_Compare))
-			{
-				ScopeSwitch("compare", s.CompareTonight, "Every round loaded, added up");
-				if (s.CompareLeft.empty() && s.CompareRight.empty()) { CompareTab(CachedCtx(snap.Fights, index, s.CompareTonight, ForcedYou)); }
-				else { CompareTab(CachedCtx(snap.Fights, index, s.CompareTonight, s.CompareLeft, s.CompareRight)); }
-				ImGui::EndTabItem();
-			}
-			if (tab("Round", T_Round)) { RoundTab(CachedCtx(snap.Fights, index, false, ForcedYou)); ImGui::EndTabItem(); }
-			if (tab("Squad", T_Squad))
-			{
-				// one round only: its tables are the round's players (the Tonight switch did nothing; the user, 2026-09-30)
-				SquadTab(CachedCtx(snap.Fights, index, false, ForcedYou));
-				ImGui::EndTabItem();
-			}
-			ImGui::EndTabBar();
+			// the line between the two sides
+			ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+			ImGui::GetWindowDrawList()->AddLine(ImVec2(b.x + 4, a.y), ImVec2(b.x + 4, b.y), IM_COL32(0x2a, 0x2e, 0x36, 255));
 		}
+		ImGui::SameLine(0, 10);
+		ImGui::BeginChild("inspector", ImVec2(0, 0), false);
+		Inspector(snap, index);
+		ImGui::EndChild();
 		ImGui::End();
 	}
 

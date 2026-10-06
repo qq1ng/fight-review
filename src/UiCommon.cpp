@@ -32,6 +32,16 @@ namespace Ui
 		return s;
 	}
 
+	void Go(int aPane)
+	{
+		State& s = S();
+		// the same pane again: nothing to go back to, unless it shows another down or spike (the caller sets which, after)
+		if (aPane == s.Shown && aPane != P_Down && aPane != P_Round) { return; }
+		s.Back.push_back({s.Shown, s.SpikeOpen, s.SpikeEnemy, s.DeathKey, s.DeathFilter, s.RoundView, s.DeathPlayer});
+		if (s.Back.size() > 16) { s.Back.erase(s.Back.begin()); }
+		s.Shown = aPane;
+	}
+
 	// ---- formatting -----------------------------------------------------------------------------------------------
 
 	// 400123 -> 400k, 7833 -> 7.8k, 999 -> 999, 12.34 -> 12.3, 0.5 -> 0.50, whole numbers stay whole
@@ -50,7 +60,23 @@ namespace Ui
 
 	std::string Lower(std::string aText)
 	{
-		for (char& ch : aText) { if (ch >= 'A' && ch <= 'Z') { ch = static_cast<char>(ch - 'A' + 'a'); } }
+		// a word in capitals stays (CC, not cc)
+		for (size_t a = 0; a < aText.size();)
+		{
+			size_t b = a;
+			int letters = 0, caps = 0;
+			while (b < aText.size() && aText[b] != ' ')
+			{
+				char ch = aText[b++];
+				letters += (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+				caps += ch >= 'A' && ch <= 'Z';
+			}
+			if (letters < 2 || caps != letters)
+			{
+				for (size_t i = a; i < b; i++) { char& ch = aText[i]; if (ch >= 'A' && ch <= 'Z') { ch = static_cast<char>(ch - 'A' + 'a'); } }
+			}
+			a = b + 1;
+		}
 		return aText;
 	}
 
@@ -165,7 +191,7 @@ namespace Ui
 
 	const char* WindowLabel(int aWindow)
 	{
-		static const char* kLabels[] = {"in our spike", "before an enemy spike", "just after an enemy spike"};
+		static const char* kLabels[] = {"in an ally spike", "before an enemy spike", "just after an enemy spike"};
 		return kLabels[aWindow];
 	}
 
@@ -335,15 +361,45 @@ namespace Ui
 		return nullptr;
 	}
 
-	int64_t SpikeOf(const std::vector<int64_t>& aPeaks, int64_t aMs)
+	int64_t SpikeOf(const Fight& f, bool aOurs, int64_t aMs)
 	{
-		int64_t best = -1;
-		for (int64_t t : aPeaks)
+		const auto& peaks = aOurs ? f.OurSpikesMs : f.TheirSpikesMs;
+		int64_t best = -1, bestGap = 0;
+		for (int64_t t : peaks)
 		{
-			if (aMs < t - kSpikeBeforeMs || aMs > t + kSpikeAfterMs) { continue; }
-			if (best < 0 || std::llabs(aMs - t) < std::llabs(aMs - best)) { best = t; }
+			auto [from, to] = SpikeSpan(f, aOurs, t);
+			auto [lo, hi] = SpikeWindow(f, aOurs, t, kSpikeBeforeMs, kSpikeAfterMs);
+			if (aMs < lo || aMs > hi) { continue; }
+			// nearest: inside a run is 0 away
+			const int64_t gap = aMs < from ? from - aMs : aMs > to ? aMs - to : 0;
+			if (best < 0 || gap < bestGap) { best = t; bestGap = gap; }
 		}
 		return best;
+	}
+
+	std::pair<int64_t, int64_t> SpikeSpan(const Fight& f, bool aOurs, int64_t aPeak)
+	{
+		const auto& peaks = aOurs ? f.OurSpikesMs : f.TheirSpikesMs;
+		const auto& spans = aOurs ? f.OurSpikeSpans : f.TheirSpikeSpans;
+		for (size_t i = 0; i < peaks.size() && i < spans.size(); i++) { if (peaks[i] == aPeak) { return {spans[i].first, spans[i].second}; } }
+		return {aPeak - 500, aPeak + 500};
+	}
+
+	std::pair<int64_t, int64_t> SpikeWindow(const Fight& f, bool aOurs, int64_t aPeak, int64_t aBefore, int64_t aAfter, bool aAtStart)
+	{
+		auto [from, to] = SpikeSpan(f, aOurs, aPeak);
+		const int64_t first = std::min(aPeak, from + 500), last = std::max(aPeak, to - 500); // the run's first and last seconds' middles
+		return aAtStart ? std::pair<int64_t, int64_t>{first - aBefore, first + aAfter} : std::pair<int64_t, int64_t>{first - aBefore, last + aAfter};
+	}
+
+	bool InSpike(const Fight& f, bool aOurs, int64_t aMs, int64_t aBefore, int64_t aAfter, bool aAtStart)
+	{
+		for (int64_t t : aOurs ? f.OurSpikesMs : f.TheirSpikesMs)
+		{
+			auto [lo, hi] = SpikeWindow(f, aOurs, t, aBefore, aAfter, aAtStart);
+			if (aMs >= lo && aMs <= hi) { return true; }
+		}
+		return false;
 	}
 
 	int64_t DeadMs(const Player& p)
@@ -371,7 +427,7 @@ namespace Ui
 				{
 					all += p.DamagePerS[s];
 					int64_t mid = static_cast<int64_t>(s) * 1000 + 500;
-					for (int64_t t : f->OurSpikesMs) { if (mid >= t - 2000 && mid <= t + 2000) { in += p.DamagePerS[s]; break; } }
+					if (InSpike(*f, true, mid, 2000, 2000)) { in += p.DamagePerS[s]; }
 				}
 			}
 		}
@@ -413,7 +469,7 @@ namespace Ui
 				for (int32_t ms : it->second.CastMs)
 				{
 					all++;
-					for (int64_t t : f->TheirSpikesMs) { if (ms >= t - 3000 && ms <= t + 1000) { timed++; break; } }
+					if (InSpike(*f, false, ms, 3000, 1000, true)) { timed++; }
 				}
 			}
 		}
@@ -946,6 +1002,59 @@ namespace Ui
 		}
 	}
 
+	namespace
+	{
+		float ChainValueW(float aSize, const ChainStep& s) { return s.Value.empty() ? 0 : 3 + ImGui::GetFont()->CalcTextSizeA(aSize * 0.85f, FLT_MAX, 0, s.Value.c_str()).x; }
+	}
+
+	float ChainWidth(float aSize, const std::vector<ChainStep>& aSteps, bool aArrows)
+	{
+		float w = 0;
+		for (size_t i = 0; i < aSteps.size(); i++) { w += aSize + ChainValueW(aSize, aSteps[i]) + (i + 1 < aSteps.size() ? (aArrows ? aSize * 0.9f : aSize * 0.2f) : 0); }
+		return w;
+	}
+
+	float ChainAt(ImDrawList* dl, ImVec2 aPos, float aSize, const std::vector<ChainStep>& aSteps, bool aArrows)
+	{
+		float x = aPos.x;
+		const ImU32 muted = ImGui::GetColorU32(kMuted);
+		for (size_t i = 0; i < aSteps.size(); i++)
+		{
+			const ChainStep& s = aSteps[i];
+			const ImVec2 p(x, aPos.y), q(x + aSize, aPos.y + aSize);
+			if (s.Cc >= 0) { CcIconAt(dl, p, aSize, static_cast<Analysis::CcKind>(s.Cc)); }
+			else if (s.Boon >= 0) { BoonIconAt(dl, p, aSize, s.Boon, true); }
+			else { IconAt(dl, p, aSize, s.Skill, s.Name); }
+			if (s.State == CS_Missed || s.State == CS_Skipped)
+			{
+				dl->AddRectFilled(p, q, IM_COL32(0x0e, 0x10, 0x13, 175));
+				dl->AddLine(ImVec2(p.x + 1, q.y - 1), ImVec2(q.x - 1, p.y + 1), s.State == CS_Missed ? kEnemy : muted, 2.0f);
+			}
+			if (s.State == CS_Missed) { dl->AddRect(ImVec2(p.x - 1, p.y - 1), ImVec2(q.x + 1, q.y + 1), kEnemy, 0, 0, 1.5f); }
+			if (s.State == CS_OffTime) { dl->AddRect(ImVec2(p.x - 1, p.y - 1), ImVec2(q.x + 1, q.y + 1), IM_COL32(0xc9, 0xa2, 0x27, 255), 0, 0, 1.5f); }
+			float vw = ChainValueW(aSize, s);
+			if (vw > 0) { dl->AddText(ImGui::GetFont(), aSize * 0.85f, ImVec2(q.x + 3, p.y + aSize * 0.08f), ImGui::GetColorU32(ImGuiCol_Text), s.Value.c_str()); }
+			if (ImGui::IsMouseHoveringRect(ImVec2(p.x - 1, p.y - 1), ImVec2(q.x + vw + 1, q.y + 1)))
+			{
+				const char* how = s.State == CS_OffTime ? " (off time)" : s.State == CS_Missed ? " (missed)" : "";
+				TipWrapped(s.Name + how + (s.Tip.empty() ? "" : "\n" + s.Tip));
+			}
+			x = q.x + vw;
+			if (i + 1 < aSteps.size())
+			{
+				if (aArrows)
+				{
+					// a small arrow to the next step
+					float cx = x + aSize * 0.45f, cy = aPos.y + aSize * 0.5f, r = aSize * 0.18f;
+					dl->AddTriangleFilled(ImVec2(cx - r * 0.7f, cy - r), ImVec2(cx - r * 0.7f, cy + r), ImVec2(cx + r * 0.9f, cy), muted);
+					x += aSize * 0.9f;
+				}
+				else { x += aSize * 0.2f; }
+			}
+		}
+		return x - aPos.x;
+	}
+
 	// Shapes the font lacks (it has Latin-1 only): 0 square, 1 circle, 2 diamond, 3 triangle up, 4 triangle down
 	void Mark(ImDrawList* dl, ImVec2 c, float r, int aShape, ImU32 aColor)
 	{
@@ -963,6 +1072,7 @@ namespace Ui
 	void ShapeKey(int aShape, ImU32 aColor, const char* aLabel)
 	{
 		float h = ImGui::GetTextLineHeight();
+		if (ImGui::GetContentRegionAvail().x < h * 0.8f + 4 + ImGui::CalcTextSize(aLabel).x) { ImGui::NewLine(); } // wrap, never cut
 		ImVec2 p = ImGui::GetCursorScreenPos();
 		Mark(ImGui::GetWindowDrawList(), ImVec2(p.x + h * 0.4f, p.y + h * 0.5f), h * 0.35f, aShape, aColor);
 		ImGui::Dummy(ImVec2(h * 0.8f, h));
@@ -1165,6 +1275,7 @@ namespace Ui
 	void Key(ImU32 aColor, const char* aLabel)
 	{
 		float h = ImGui::GetTextLineHeight();
+		if (ImGui::GetContentRegionAvail().x < h * 0.9f + 4 + ImGui::CalcTextSize(aLabel).x) { ImGui::NewLine(); } // wrap, never cut
 		ImVec2 p = ImGui::GetCursorScreenPos();
 		Rect(ImGui::GetWindowDrawList(), ImVec2(p.x, p.y + h * 0.3f), h * 0.9f, h * 0.4f, aColor);
 		ImGui::Dummy(ImVec2(h * 0.9f, h));
@@ -1194,6 +1305,34 @@ namespace Ui
 		ImGui::PopID();
 	}
 
+	std::vector<EnemyTeam> EnemyTeams(const Fight& f)
+	{
+		// players: those who fought us (as EnemyCount); downs and kills: every enemy of the team, as the round's totals count them
+		std::map<int, EnemyTeam> by;
+		for (const auto& e : f.Enemies)
+		{
+			EnemyTeam& t = by[e.Team];
+			t.Team = e.Team;
+			if (e.Fought) { t.Players++; t.Specs[e.Spec]++; }
+			for (const auto& sp : e.DownSpans) { (sp.Dead ? t.Killed : t.Downed)++; }
+		}
+		std::vector<EnemyTeam> out;
+		for (auto& [k, t] : by) { if (t.Players || t.Downed || t.Killed) { out.push_back(t); } }
+		std::stable_sort(out.begin(), out.end(), [](const EnemyTeam& a, const EnemyTeam& b) { return a.Players > b.Players; });
+		return out;
+	}
+
+	const char* TeamName(int aTeam) { return aTeam == 0 ? "Red" : aTeam == 1 ? "Blue" : aTeam == 2 ? "Green" : "Unknown team"; }
+
+	void TipWrapped(const std::string& aText)
+	{
+		ImGui::BeginTooltip();
+		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35);
+		ImGui::TextUnformatted(aText.c_str());
+		ImGui::PopTextWrapPos();
+		ImGui::EndTooltip();
+	}
+
 	void Answer(const std::string& aText)
 	{
 		ImGui::PushTextWrapPos(0.0f);
@@ -1208,11 +1347,16 @@ namespace Ui
 		double span = static_cast<double>(std::max<int64_t>(1, f.DurationMs));
 		auto x = [&](double aMs) { return p.x + static_cast<float>(std::clamp(aMs / span, 0.0, 1.0)) * aWidth; };
 		dl->AddRectFilled(p, ImVec2(p.x + aWidth, p.y + aHeight), kLaneBg);
-		for (int64_t t : f.OurSpikesMs) { dl->AddRectFilled(ImVec2(x(t - 2000.0), p.y), ImVec2(x(t + 2000.0), p.y + aHeight), kOurBand); }
+		for (int64_t t : f.OurSpikesMs)
+		{
+			auto [a, b] = SpikeWindow(f, true, t, 2000, 2000);
+			dl->AddRectFilled(ImVec2(x(double(a)), p.y), ImVec2(x(double(b)), p.y + aHeight), kOurBand);
+		}
 		for (int64_t t : f.TheirSpikesMs)
 		{
-			if (aWindow == Analysis::T_AheadOfTheirs) { dl->AddRectFilled(ImVec2(x(t - 4000.0), p.y), ImVec2(x(double(t)), p.y + aHeight), kEnemyPre); }
-			dl->AddRectFilled(ImVec2(x(double(t)), p.y), ImVec2(x(t + 3000.0), p.y + aHeight), kEnemyBand);
+			auto [a, b] = SpikeWindow(f, false, t, 0, 3000);
+			if (aWindow == Analysis::T_AheadOfTheirs) { dl->AddRectFilled(ImVec2(x(a - 4000.0), p.y), ImVec2(x(double(a)), p.y + aHeight), kEnemyPre); }
+			dl->AddRectFilled(ImVec2(x(double(a)), p.y), ImVec2(x(double(b)), p.y + aHeight), kEnemyBand);
 		}
 		for (int32_t t : aTimes) { float tx = x(t); dl->AddRectFilled(ImVec2(tx, p.y + 1), ImVec2(tx + 2, p.y + aHeight - 1), aTick); }
 		ImGui::Dummy(ImVec2(aWidth, aHeight));
@@ -1279,7 +1423,7 @@ namespace Ui
 			ImGui::Spacing();
 			ImGui::TextColored(kMuted, c.LeftIsYou() ? "When you each cast it" : "When each cast it");
 			ImGui::SameLine(0, 20);
-			Key(kOurBand, "our spike");
+			Key(kOurBand, "ally spike");
 			Key(k == Analysis::T_AheadOfTheirs ? kEnemyPre : kEnemyBand, k == Analysis::T_AheadOfTheirs ? "4 s before an enemy spike" : "enemy spike and 3 s after");
 			ImGui::NewLine();
 			if (!c.OneRound) { ImGui::TextColored(kMuted, "Time lines show one round at a time: pick This round."); }

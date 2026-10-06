@@ -78,10 +78,12 @@ namespace Evtc
 		SC_BuffRemoveSingle = 71,
 		SC_BuffRemoveAll = 72,
 		SC_Teleport = 85,     // src: moved by a teleport (own or an enemy pull)
+		SC_TeamChange = 22,   // src's team: dst the new id, else (this ArcDPS build, 2026-10-05) value
+		SC_WvwTeams = 74,     // uint32[6] over src, dst, value, buff_dmg: red, blue, green shard; red, blue, green team id
 	};
 
 	constexpr uint8_t IFF_FOE = 1;
-	constexpr uint8_t RESULT_BLOCK = 3, RESULT_EVADE = 4, RESULT_ABSORB = 6;
+	constexpr uint8_t RESULT_BLOCK = 3, RESULT_EVADE = 4, RESULT_ABSORB = 6, RESULT_BLIND = 7;
 
 	struct Agent
 	{

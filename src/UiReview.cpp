@@ -66,13 +66,13 @@ namespace Ui
 
 		bool InEnemySpike(const Fight& f, int32_t aMs)
 		{
-			return SpikeOf(f.TheirSpikesMs, aMs) >= 0;
+			return SpikeOf(f, false, aMs) >= 0;
 		}
 
 		// A build's key skill on time (the Snow Crows guides, 2026-09-29): jobs named "<skill> in our spike" (cast within
 		// 2 s of our spike's peak: Well of Corruption, Nightfall, Crescendo on the main call) or "<skill> before enemy
 		// spikes" (in the 4 s before one: stability ahead of their CC). Returns the skill and the timing class, or -1.
-		const char* const kInOurSpike = " in our spike";
+		const char* const kInOurSpike = " in an ally spike";
 		const char* const kBeforeTheirs = " before enemy spikes";
 		std::pair<std::string, int> KeySkillOf(const std::string& aJob)
 		{
@@ -290,7 +290,7 @@ namespace Ui
 				double y = 100.0 * you.StabSpikeShare / you.StabSpikes, t = 100.0 * vs.StabSpikeShare / vs.StabSpikes;
 				jobMeasure(kJobStabAtSpikes, y, t, "% of your subgroup", t - y >= 15,
 					"In the 3 s up to the peak of " + std::to_string(you.StabSpikes) + " enemy spikes, " + std::to_string(int(y + 0.5)) + "% of your subgroup had stability from you, on average; " +
-					vs.Name + ": " + std::to_string(int(t + 0.5)) + "% over " + std::to_string(vs.StabSpikes) + " spikes. Stability given in the seconds before their spike is on when it lands.");
+					vs.Name + ": " + std::to_string(int(t + 0.5)) + "% over " + std::to_string(vs.StabSpikes) + " spikes. Stability given in the seconds before the enemy spike is on when it lands.");
 			}
 			if (you.StabAllyNominalMs >= 10000 && vs.StabAllyNominalMs >= 10000)
 			{
@@ -371,9 +371,18 @@ namespace Ui
 		{
 			ImDrawList* dl = ImGui::GetWindowDrawList();
 			float lh = ImGui::GetTextLineHeight();
-			float h = lh * (f.Note.empty() ? 1.7f : 2.5f); // a note gets a line of its own
 			ImVec2 p = ImGui::GetCursorScreenPos();
 			float width = ImGui::GetContentRegionAvail().x;
+			// the columns narrow with the pane (the window's right side, the v10 design); the tag goes under the
+			// numbers when it would run into them
+			const float k = std::clamp(width / 880.0f, 0.6f, 1.0f);
+			const float cName = 242 * k, cWhat = 250 * k, cBars = 380 * k, wBars = 130 * k, cVals = 520 * k;
+			std::string values = f.YouText + " / " + f.ThemText;
+			const float valuesEnd = cVals + 8 + ImGui::CalcTextSize(values.c_str()).x + ImGui::CalcTextSize(f.Unit.c_str()).x;
+			const float tw = aTag.empty() ? 0 : ImGui::CalcTextSize(aTag.c_str()).x;
+			const bool tagBelow = !aTag.empty() && width - tw - 4 < valuesEnd + 10;
+			const int lines = 1 + !f.Note.empty() + tagBelow; // a note gets a line of its own
+			float h = lh * (lines == 1 ? 1.7f : lines == 2 ? 2.5f : 3.4f);
 			ImGui::PushID(aIndex);
 			bool clicked = ImGui::Selectable("##fix", aOpen, 0, ImVec2(0, h));
 			ImGui::PopID();
@@ -389,32 +398,30 @@ namespace Ui
 			}
 			// the name, cut to fit before the next column (the full name on hover)
 			std::string subject = f.Subject;
-			float room = p.x + 242 - x;
+			float room = p.x + cName - x;
 			if (ImGui::CalcTextSize(subject.c_str()).x > room)
 			{
 				while (!subject.empty() && ImGui::CalcTextSize((subject + "...").c_str()).x > room) { subject.pop_back(); }
 				subject += "...";
-				if (ImGui::IsItemHovered() && ImGui::GetIO().MousePos.x < p.x + 242) { ImGui::SetTooltip("%s", f.Subject.c_str()); }
+				if (ImGui::IsItemHovered() && ImGui::GetIO().MousePos.x < p.x + cName) { ImGui::SetTooltip("%s", f.Subject.c_str()); }
 			}
 			dl->AddText(ImVec2(x, ty), ink, subject.c_str());
-			dl->AddText(ImVec2(p.x + 250, ty), ink, f.What.c_str());
-			PairBars(dl, ImVec2(p.x + 380, p.y), 130, lh * 1.7f, f);
-			std::string values = f.YouText + " / " + f.ThemText;
-			dl->AddText(ImVec2(p.x + 520, ty), ink, values.c_str());
-			dl->AddText(ImVec2(p.x + 528 + ImGui::CalcTextSize(values.c_str()).x, ty), muted, f.Unit.c_str());
+			dl->PushClipRect(ImVec2(p.x + cWhat, p.y), ImVec2(p.x + cBars - 6, p.y + h), true);
+			dl->AddText(ImVec2(p.x + cWhat, ty), ink, f.What.c_str());
+			dl->PopClipRect();
+			PairBars(dl, ImVec2(p.x + cBars, p.y), wBars, lh * 1.7f, f);
+			dl->AddText(ImVec2(p.x + cVals, ty), ink, values.c_str());
+			dl->AddText(ImVec2(p.x + cVals + 8 + ImGui::CalcTextSize(values.c_str()).x, ty), muted, f.Unit.c_str());
 			if (!f.Note.empty())
 			{
 				// on its own line under the numbers, so the tag at the right keeps its room
-				SmallText(dl, ImVec2(p.x + 528, ty + ImGui::GetTextLineHeight() * 0.95f), muted, f.Note);
+				SmallText(dl, ImVec2(p.x + cVals + 8, ty + ImGui::GetTextLineHeight() * 0.95f), muted, f.Note);
 			}
 			if (!aTag.empty())
 			{
-				if (ImGui::IsItemHovered() && ImGui::GetIO().MousePos.x > p.x + width - ImGui::CalcTextSize(aTag.c_str()).x - 8)
-				{
-					ImGui::SetTooltip("The same came up in your other rounds tonight");
-				}
-				float tw = ImGui::CalcTextSize(aTag.c_str()).x;
-				dl->AddText(ImVec2(p.x + width - tw - 4, ty), muted, aTag.c_str());
+				float tx = p.x + width - tw - 4, tagY = tagBelow ? ty + lh * 0.95f * (f.Note.empty() ? 1 : 2) : ty;
+				if (ImGui::IsMouseHoveringRect(ImVec2(tx - 4, tagY), ImVec2(tx + tw, tagY + lh))) { ImGui::SetTooltip("The same came up in your other rounds tonight"); }
+				dl->AddText(ImVec2(tx, tagY), muted, aTag.c_str());
 			}
 			return clicked;
 		}
@@ -436,6 +443,7 @@ namespace Ui
 			std::string UsualText;
 			std::function<std::string(double)> Fmt;
 			bool Lower = false;         // less is better (stability left over)
+			std::string BestWho;        // whose number Best is
 			bool Leads() const { return Lower ? You <= Best : You >= Best; }
 		};
 		void AddUsual(const Ctx& c, std::vector<MeasureRow>& aRows); // after NightOf
@@ -464,7 +472,7 @@ namespace Ui
 			if (c.MyRole == R_Damage || c.MyRole == R_Strip)
 			{
 				defs.push_back({"Damage to all /s", kMetricDamageAll, rate(kMetricDamageAll), Num, 100, false});
-				defs.push_back({"Damage in our spikes", kMetricDamage, [&c](const Player& p) { return std::max(0.0, SpikeShare(Lookup(c, p).first, Lookup(c, p).second, p.Spec)); },
+				defs.push_back({"Damage in ally spikes", kMetricDamage, [&c](const Player& p) { return std::max(0.0, SpikeShare(Lookup(c, p).first, Lookup(c, p).second, p.Spec)); },
 					[](double v) { return std::to_string(int(v + 0.5)) + "%"; }, 1, false});
 			}
 			defs.push_back({kJobCc, kNoMetric, [](const Player& p) { return CountRate(p, p.CcDealt); }, Num, 0.5, false});
@@ -543,7 +551,7 @@ namespace Ui
 				{
 					auto [in, all] = KeyCasts(c, c.You, skill, window);
 					r.Tip = "Of your " + skill + " casts, how many went off " + WindowLabel(window) +
-						(window == Analysis::T_IntoOurs ? " (within 2 s of its peak): the main call." : ": stability up before their CC lands.") +
+						(window == Analysis::T_IntoOurs ? " (within 2 s of its peak): the main call." : ": stability up before enemy CC lands.") +
 						"\nYou: " + (all ? std::to_string(in) + " of " + std::to_string(all) : std::string("not cast")) + ".";
 				}
 				if (d.Name == kJobDowns)
@@ -576,6 +584,7 @@ namespace Ui
 					if (d.NeedsHeal && !p.HealKnown) { continue; }
 					double v = d.Value(p);
 					if (v < 0) { continue; }
+					if (first || (d.Lower ? v < r.Best : v > r.Best)) { r.BestWho = p.Name; }
 					r.Best = first ? v : d.Lower ? std::min(r.Best, v) : std::max(r.Best, v);
 					first = false;
 					all.push_back(v);
@@ -659,6 +668,9 @@ namespace Ui
 			return rows;
 		}
 
+		// The measure rows' columns narrow with the pane (the window's right side, the v10 design)
+		float MeasureScale() { return std::clamp(ImGui::GetContentRegionAvail().x / 960.0f, 0.6f, 1.0f); }
+
 		// One bullet row: track = best (or median), blue bar = you, tick = median
 		bool BulletRow(int aIndex, const MeasureRow& r, bool aClickable)
 		{
@@ -666,13 +678,16 @@ namespace Ui
 			float lh = ImGui::GetTextLineHeight();
 			float h = lh + 6;
 			ImVec2 p = ImGui::GetCursorScreenPos();
+			const float k = MeasureScale();
 			ImGui::PushID(aIndex);
 			bool clicked = ImGui::Selectable("##m", false, aClickable ? 0 : ImGuiSelectableFlags_Disabled, ImVec2(0, h));
 			ImGui::PopID();
 			ImU32 ink = ImGui::GetColorU32(ImGuiCol_Text), muted = ImGui::GetColorU32(kMuted);
 			float ty = p.y + 3;
+			dl->PushClipRect(ImVec2(p.x, p.y), ImVec2(p.x + 214 * k, p.y + h), true);
 			dl->AddText(ImVec2(p.x + 4, ty), ink, r.Shown.c_str());
-			const float bx = p.x + 220, bw = 280, bh = lh * 0.45f;
+			dl->PopClipRect();
+			const float bx = p.x + 220 * k, bw = 280 * k, bh = lh * 0.45f;
 			double mx = std::max({r.You, r.Best, r.Median});
 			if (mx <= 0) { mx = 1; }
 			float by = p.y + (h - bh) * 0.5f;
@@ -687,9 +702,9 @@ namespace Ui
 			{
 				dl->AddText(ImVec2(aX - ImGui::CalcTextSize(aText.c_str()).x, ty), aCol, aText.c_str());
 			};
-			right(p.x + 590, r.YouText, ink);
-			right(p.x + 680, r.RefText, muted);
-			dl->AddText(ImVec2(p.x + 700, ty), ink, r.Gap.c_str());
+			right(p.x + 590 * k, r.YouText, ink);
+			right(p.x + 680 * k, r.RefText, muted);
+			dl->AddText(ImVec2(p.x + 700 * k, ty), ink, r.Gap.c_str());
 			if (aClickable) { ImGui::RenderArrow(dl, ImVec2(p.x + ImGui::GetContentRegionAvail().x - 14, ty), muted, ImGuiDir_Right, 0.7f); }
 			return clicked;
 		}
@@ -699,11 +714,12 @@ namespace Ui
 			ImDrawList* dl = ImGui::GetWindowDrawList();
 			ImVec2 p = ImGui::GetCursorScreenPos();
 			ImU32 muted = ImGui::GetColorU32(kMuted);
+			const float k = MeasureScale();
 			dl->AddText(ImVec2(p.x + 4, p.y), muted, "Measure");
-			dl->AddText(ImVec2(p.x + 220, p.y), muted, aScale);
-			dl->AddText(ImVec2(p.x + 590 - ImGui::CalcTextSize("You").x, p.y), muted, "You");
-			dl->AddText(ImVec2(p.x + 680 - ImGui::CalcTextSize(aRef).x, p.y), muted, aRef);
-			dl->AddText(ImVec2(p.x + 700, p.y), muted, "Gap");
+			dl->AddText(ImVec2(p.x + 220 * k, p.y), muted, aScale);
+			dl->AddText(ImVec2(p.x + 590 * k - ImGui::CalcTextSize("You").x, p.y), muted, "You");
+			dl->AddText(ImVec2(p.x + 680 * k - ImGui::CalcTextSize(aRef).x, p.y), muted, aRef);
+			dl->AddText(ImVec2(p.x + 700 * k, p.y), muted, "Gap");
 			ImGui::Dummy(ImVec2(0, ImGui::GetTextLineHeight()));
 		}
 
@@ -806,7 +822,7 @@ namespace Ui
 						tip += std::string(tip.empty() ? "" : "\n") + "Your usual: your median tonight on this spec" +
 							(r.Scales ? ", as a rate over a round as long as this one (you alive)." : ".");
 					}
-					ImGui::SetTooltip("%s", tip.c_str());
+					TipWrapped(tip);
 				}
 				ImGui::PopID();
 				ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1027,7 +1043,7 @@ namespace Ui
 					}
 				}
 				else { ImGui::Text("Downed %d times and dead %d times tonight.", c.You.Downs, c.You.Deaths); }
-				if (ImGui::SmallButton("Open in Deaths")) { s.SwitchTo = T_Deaths; s.DeathFilter = 1; s.DeathKey.clear(); s.DeathSpike = -1; }
+				if (ImGui::SmallButton("Your downs, step by step >")) { s.SwitchTo = T_Deaths; s.DeathFilter = 1; s.DeathKey.clear(); s.DeathSpike = -1; }
 				break;
 			}
 			ImGui::Spacing();
@@ -1289,7 +1305,7 @@ namespace Ui
 			const NightRound& r = n.Rounds[i];
 			const Fight& f = *fights[i];
 			ImGui::BeginTooltip();
-			ImGui::Text("Round %d, %s, %s: %s, downed %d of theirs, %d of ours", i + 1, Clock(f.Stamp).c_str(), Duration(f.DurationMs).c_str(),
+			ImGui::Text("Round %d, %s, %s: %s, downed %d enemies, %d allies", i + 1, Clock(f.Stamp).c_str(), Duration(f.DurationMs).c_str(),
 				r.Result > 0 ? "won" : r.Result < 0 ? "lost" : "even", f.EnemyDowns, f.SquadDowns);
 			if (!r.Mine) { ImGui::TextColored(kMuted, "You weren't on %s this round.", c.You.Spec.c_str()); }
 			else if (!r.Known) { ImGui::TextColored(kMuted, "Your healing is unknown this round."); }
@@ -1298,7 +1314,7 @@ namespace Ui
 			ImGui::EndTooltip();
 			if (ImGui::IsItemClicked()) { S().Selected = i == count - 1 ? -1 : i; S().SwitchTo = T_You; S().YouTonight = false; }
 		}
-		ImGui::TextColored(kMuted, "Under each round: blue we downed more of theirs, orange they downed more of ours, grey even.");
+		ImGui::TextColored(kMuted, "Under each round: blue allies downed more enemies, orange enemies downed more allies, grey even.");
 
 		// The fixes that keep coming back, across the window; under it, your rounds and the squad's night
 		ImGui::Spacing();
@@ -1395,14 +1411,14 @@ namespace Ui
 			for (int32_t d : f.SquadDownMs)
 			{
 				squadDowns++;
-				inSpikes += SpikeOf(f.TheirSpikesMs, d) >= 0;
+				inSpikes += SpikeOf(f, false, d) >= 0;
 			}
 			for (auto& [g, w] : f.GroupCcWindows) { windows += w; }
 			for (auto& [g, k] : f.GroupCcCovered) { covered += k; }
 		}
 		line("rounds", std::to_string(won) + " won, " + std::to_string(lost) + " lost, " + std::to_string(count - won - lost) + " even");
-		if (squadDowns) { line("downs", std::to_string(inSpikes * 100 / squadDowns) + "% of ours came in an enemy spike"); }
-		if (windows) { line("CC", "stability covered " + std::to_string(covered * 100 / windows) + "% of the CC on us"); }
+		if (squadDowns) { line("downs", std::to_string(inSpikes * 100 / squadDowns) + "% of ally downs came in an enemy spike"); }
+		if (windows) { line("CC", "stability covered " + std::to_string(covered * 100 / windows) + "% of the CC on allies"); }
 		ImGui::EndChild();
 	}
 
@@ -1453,5 +1469,27 @@ namespace Ui
 			n.FixSkill = f.Kind == F_Skill ? f.Skill : kNoSkill;
 		}
 		return n;
+	}
+
+	LeadFacts YourLead(const Ctx& c)
+	{
+		LeadFacts out;
+		if (!c.MeRaw) { return out; }
+		std::vector<MeasureRow> rows = OutputRows(c);
+		if (rows.empty()) { return out; }
+		AddUsual(c, rows);
+		const MeasureRow& r = rows[0];
+		out.Has = true;
+		out.Name = Lower(r.Shown);
+		out.YouText = r.YouText;
+		out.BestText = r.Of > 1 && r.Fmt ? r.Fmt(r.Best) : std::string();
+		out.BestWho = r.BestWho;
+		out.UsualText = r.Usual >= 0 ? r.UsualText : std::string();
+		out.Gap = r.Gap;
+		out.Rank = r.Rank;
+		out.Of = r.Of;
+		out.Leads = r.Leads();
+		out.Unknown = r.Unknown;
+		return out;
 	}
 }

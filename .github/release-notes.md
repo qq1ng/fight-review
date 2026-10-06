@@ -2,17 +2,16 @@
 since the last release, not the base features. Keep "Install". This comment doesn't show on GitHub. -->
 ## What's new
 
-- **Summary, new "Calls" section**: a card for each key skill your squad used this round, with a verdict: wells
-  together, the Warrior spear opener and melee burst, Chronomancer, Necromancer and Elementalist burst with the wells,
-  Winds of Disenchantment, Spinal Shivers, Battle Standard, Tale of the August Queen, stability and Druid heals before
-  their spikes, revives, Crescendo and Continuum Split. Click a card for who and when, by spike; hover a player for
-  the skills they used around the call.
-- **Round**: invulnerability over the round for both sides (hover ours to see who used it); click a marked skill's
-  name for a row per player, with how long each use kept hitting.
-- **Spike breakdowns**: invulnerability of the side being hit; in an enemy spike, who was invulnerable. A spike now
-  opens at the top of the page.
-- **Squad**: "Invuln in spikes" (Defence): Distortion used in enemy spikes, of all uses.
-- **Summary**: "CC on us" now counts every CC hit (as TopStats does), and how many came with no stability.
+- **New layout**: the round's debrief stays on the left (result, spikes, you, downs, enemy, best players, calls);
+  whatever you click opens on the right, with Back. A small 250 px window shows the lines you pick while you play.
+- **Spikes**: a long push is one spike now ("0:02-0:14"), not several 3 s apart; its downs count together.
+- **Round graph**: ally invulnerability with the enemy hits it absorbed; hover a spike for what happened, click to
+  open it.
+- **Calls**: the wells as a grid per Necromancer (who left one out), the Warrior opener as a row of icons, Tale and
+  stability as tables (stability per subgroup at each enemy spike: who had it, the CC it took, who went down).
+- **Enemy**: fighting more than one server, the enemy count is split by team.
+- **Fixes**: Chronomancer bursts timed by their hits; a cancelled or lone well isn't a call; Signet of Might judged by
+  its effect; damage totals leave out pets.
 
 ## Install
 

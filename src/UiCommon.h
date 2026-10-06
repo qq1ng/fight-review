@@ -28,6 +28,11 @@ namespace Ui
 	extern const ImU32 kYou, kPeer, kPeerTick, kEnemy, kTrack, kLaneBg, kOurBand, kEnemyBand, kEnemyPre;
 
 	enum Tab { T_Summary, T_You, T_Deaths, T_Compare, T_Round, T_Squad, T_TabCount };
+	// What the window's right side shows (the v10 design, the user's pick 2026-10-04: the debrief at the left answers the
+	// six questions, a click opens the detail at the right). The old tabs are panes here; SwitchTo's tabs map onto them.
+	enum Pane { P_Home, P_Down, P_Downs, P_Revives, P_Round, P_You, P_Night, P_Compare, P_Squad, P_Calls, P_Help, P_Count };
+	// The small window's lines (the user, 2026-10-04: 250 x 250 at most; each player picks the lines they read)
+	enum MiniLine { ML_You, ML_Rank, ML_Why, ML_Downs, ML_Enemy, ML_Best, ML_Calls, ML_Count };
 	enum Role { R_Heal, R_Stab, R_Damage, R_Strip };
 	// A common build of a spec, from an audit of the user's logs (src/SpecJobs.inc)
 	// A row of a spec's main jobs (src/SpecJobs.inc): appended when When holds for the player ("" = always)
@@ -43,7 +48,12 @@ namespace Ui
 		bool        CompareTonight = false; // Compare and Squad: every round loaded, added up
 		bool        SquadTonight = false;
 		std::string VsAccount;          // "" = the best on your spec
-		int         SwitchTo = -1;      // a tab to select next frame
+		int         SwitchTo = -1;      // a tab to select next frame (mapped onto a View)
+		// The window's right side: the pane shown, and the way back (Back pops it). A step keeps what decides the pane.
+		int         Shown = P_Home;
+		struct Step { int Shown = P_Home; int64_t SpikeOpen = -1; bool SpikeEnemy = false; std::string DeathKey; int DeathFilter = 0; int RoundView = 0; std::string DeathPlayer; };
+		std::vector<Step> Back;
+		bool        KeepPane = false;   // the small window opened the window at a pane: a round that came meanwhile doesn't reset it
 		// Review: breadcrumb level and the open fix line
 		int         Measure = -1;       // measure opened by skill, -1 = overview
 		int32_t     Skill = kNoSkill;   // skill opened in the drill-down
@@ -74,10 +84,13 @@ namespace Ui
 		std::string SpikeStamp;         // the round it belongs to
 		// Deaths
 		std::string DeathKey;           // the down shown: round/account/ms, "" = the first that fits the filter
-		int         DeathFilter = 0;    // 0 everyone, 1 you, 2 your subgroup
+		int         DeathFilter = 0;    // 0 everyone, 1 you, 2 your subgroup, 3 revives, 4 one enemy spike (DeathSpike), 5 one player (DeathPlayer)
+		std::string DeathPlayer;        // the player of filter 5, by account (a click in the squad grid: their downs, earlier and later)
 		int64_t     DeathSpike = -1;    // an enemy spike opened from the Round tab: its downs first
 	};
 	State& S();
+	// Open a pane at the right, remembering the current one for Back (a click in the debrief, the small window, a link)
+	void Go(int aPane);
 	// The snapshot's version this frame (Session::Snapshot::Version): per-round caches key on it, so a round re-read
 	// (or a new night) never leaves them pointing into rounds that are gone
 	uint64_t DataVersion();
@@ -165,19 +178,47 @@ namespace Ui
 	// on 25 Sept) to 4 s after. On 110 held-out rounds, 1 s before caught 73% of our downs in an enemy spike, 3 s 86%,
 	// with a spike that led to a down 59% -> 66% of the time; 4 s before adds little (the rate there is near the
 	// baseline). The same holds for enemy downs in our spikes (68% -> 78%).
+	// A spike is a run of seconds now (Analysis Spikes, 2026-10-06): the window runs from 2.5 s before the run's start to
+	// 3.5 s after its end, the same as before for a one-second spike.
 	constexpr int64_t kSpikeBeforeMs = 3000, kSpikeAfterMs = 4000;
-	// The spike (its peak, ms) a moment belongs to: the nearest peak whose window holds it; -1 none
-	int64_t SpikeOf(const std::vector<int64_t>& aPeaks, int64_t aMs);
+	// The spike (its peak, ms) a moment belongs to, ours or theirs: the nearest whose window holds it; -1 none
+	int64_t SpikeOf(const Fight& f, bool aOurs, int64_t aMs);
+	// A spike's run (start of its first second, end of its last), from its peak; a peak not found: the peak's second
+	std::pair<int64_t, int64_t> SpikeSpan(const Fight& f, bool aOurs, int64_t aPeak);
+	// A fixed window around a spike's peak (aBefore before it, aAfter after), stretched over the spike's whole run: the same
+	// window for a one-second spike. aAtStart: both ends against the run's start instead (what came before a spike, or
+	// early in it, shouldn't stretch over a 12 s one)
+	std::pair<int64_t, int64_t> SpikeWindow(const Fight& f, bool aOurs, int64_t aPeak, int64_t aBefore, int64_t aAfter, bool aAtStart = false);
+	// In the window (as above) of any spike of that side
+	bool InSpike(const Fight& f, bool aOurs, int64_t aMs, int64_t aBefore, int64_t aAfter, bool aAtStart = false);
 	// One use of invulnerability by one of ours: the gives of one player within 0.3 s (Tale of the August Queen puts
 	// Distortion on the whole group at once). Skill: what they cast then, else the buff's name.
 	struct InvulnUse { int32_t Ms = 0, Duration = 0; int By = -1; std::vector<int> To; std::string Skill; };
 	std::vector<InvulnUse> InvulnUses(const Fight& f, int64_t aFrom, int64_t aTo);
 	// This round's calls (the Summary): a card per key skill this squad brought, judged by its own rule (UiCalls.cpp).
 	// Group: 0 in our spikes, 1 before theirs, 2 after downs and both ways. Kind: 0 good, 1 partly, 2 off.
+	// A step of a chain of actions (ChainAt, under drawing): a skill, a CC type or a boon taken, and how it went
+	enum ChainState { CS_Done, CS_OffTime, CS_Missed, CS_Skipped };
+	struct ChainStep { int32_t Skill = 0; int Cc = -1, Boon = -1; std::string Name, Value, Tip; int State = CS_Done; };
+	// One cast on a row's strip, when a row is a whole call (the wells: every well of it on one strip)
+	struct CallMark { int32_t Off = 0; bool Good = true; std::string Who, Skill; };
+	// A table card's cell (Tale: a row per use; stability: a row per enemy spike, a column per subgroup). Kind: -1 plain,
+	// 0 good, 1 partly, 2 bad (the text says it too), 3 not counted (grey); Downs: allies downed, a mark after the text
+	struct CallCell { std::string Text, Tip; int Kind = -1; bool Right = false; int Downs = 0; };
 	struct CallRow { std::string Who, Skill; int32_t Ms = 0; std::string Ref, What; bool Good = true; int32_t Offset = 0;
-		std::string Part, Section; const Player* By = nullptr; int32_t At = 0; }; // Ref: timed against that moment (a strip); Part, Section:
-	// headings in the detail; By, At: the player and the call's moment (hover: their skills around it)
-	struct CallCard { std::string Key, Name, Should, Line, Short, Verdict, Detail; int Group = 0, Kind = 1, Num = 0, Den = 0; int32_t Skill = 0; std::vector<CallRow> Rows; };
+		std::string Part, Section; const Player* By = nullptr; int32_t At = 0;
+		std::vector<CallMark> Marks; int32_t WinFrom = -1000, WinTo = 2500; bool NoteBad = false;
+		std::vector<ChainStep> Chain;               // the actions of this row in order, as icons (a Warrior's opener)
+		std::vector<std::vector<ChainStep>> Cells;  // a grid row: a cell per column of the card (each Necromancer's two wells)
+		int Downs = -1;                             // enemies downed after this call (a grid row), -1: none shown
+		std::vector<CallCell> Table; };             // a table card's row, under the card's Head
+	// Ref: timed against that moment (a strip, What's text after two spaces is a note beside it, red when NoteBad);
+	// WinFrom, WinTo: the on-the-call window on the strip; Marks: several casts on one strip; Part, Section: headings in
+	// the detail; By, At: the player and the call's moment (hover: their skills around it)
+	struct CallCard { std::string Key, Name, Should, Line, Short, Verdict, Detail; int Group = 0, Kind = 1, Num = 0, Den = 0; int32_t Skill = 0; std::vector<CallRow> Rows;
+		std::map<std::string, std::string> PartTips; // Detail: how its rows are judged (the head's hover); PartTips: each part's (its heading's hover)
+		std::vector<std::string> Columns;             // a grid card's columns (the wells: a Necromancer each), the rows' Cells under them
+		std::vector<std::string> Head, HeadTips; };   // a table card's headings and their hovers (3 to 5 words); the rows' Table under them
 	const std::vector<CallCard>& RoundCalls(const Fight& f);
 	// Was this player (Players index) invulnerable at that moment, and from whose use
 	const Analysis::Fight::InvulnGive* InvulnOn(const Fight& f, int aPlayer, int32_t aMs);
@@ -216,6 +257,12 @@ namespace Ui
 	// The game's icon for a CC type or a boon (outlined in red when aStruck: stripped or corrupted), else a lettered box
 	void CcIconAt(ImDrawList* dl, ImVec2 aPos, float aSize, Analysis::CcKind aKind);
 	void BoonIconAt(ImDrawList* dl, ImVec2 aPos, float aSize, int aBoon, bool aStruck);
+	// A chain of actions as small icons with arrows between (the down's step cards made small; the user, 2026-10-05: a
+	// series of actions as icons, names on hover, not as text). A step: a skill, a CC type or a boon taken; how it went
+	// (done; done off time: a gold frame; missed: dimmed, struck through, a red frame; not expected then: dimmed, struck
+	// through in grey); a short value after it; its name and words on hover.
+	float ChainWidth(float aSize, const std::vector<ChainStep>& aSteps, bool aArrows = true);
+	float ChainAt(ImDrawList* dl, ImVec2 aPos, float aSize, const std::vector<ChainStep>& aSteps, bool aArrows = true); // returns the width
 	const char* SkillDescription(int32_t aSkill, const std::string& aName); // the GW2 API's text, "" if unknown
 	const char* BoonDescription(int aBoon);                                  // what the boon does, in a few words
 	void Headers(const std::vector<std::pair<const char*, const char*>>& aColumns);
@@ -228,6 +275,12 @@ namespace Ui
 	void Mark(ImDrawList* dl, ImVec2 aCentre, float aRadius, int aShape, ImU32 aColor); // 0 square, 1 circle, 2 diamond, 3 up, 4 down
 	void ShapeKey(int aShape, ImU32 aColor, const char* aLabel);
 	void Answer(const std::string& aText);      // the line that states the answer
+	void TipWrapped(const std::string& aText);  // a tooltip of free text, wrapped at about 35 characters' width (never the screen's)
+	// The enemy teams that fought us this round (WvW: red, blue, green; the user, 2026-10-05: two teams at once are told
+	// apart), most players first: players, downed, killed and classes per team. One entry, Team -1, when the log doesn't say.
+	struct EnemyTeam { int Team = -1; int Players = 0, Downed = 0, Killed = 0; std::map<std::string, int> Specs; };
+	std::vector<EnemyTeam> EnemyTeams(const Fight& f);
+	const char* TeamName(int aTeam); // Red, Blue, Green, or Unknown team
 	// This round / Tonight at the right of a tab's first line; aTip explains Tonight
 	void ScopeSwitch(const char* aId, bool& aTonight, const char* aTip);
 	// One lane of the fight: our spike bands, enemy spike bands (and the 4 s before, for aWindow ahead), cast ticks
@@ -238,7 +291,7 @@ namespace Ui
 
 	// ---- the tabs --------------------------------------------------------------------------------------------------
 	void ReviewTab(const Ctx& c);
-	void DeathsTab(const Ctx& c);
+	void DeathsTab(const Ctx& c, int aMode = 0); // aMode: DeathsMode (below)
 	void RoundTab(const Ctx& c);
 	void TonightTab(const Ctx& c);
 	// Parts of the old Stability tab: the subgroup time line (Round), the givers table (Squad)
@@ -280,11 +333,24 @@ namespace Ui
 		std::string TopSkill;
 	};
 	DeathCause CauseOf(const Fight& f, const Player& p, const Analysis::Span& s);
-	// The small summary window: the Summary tab in a few lines (the round, your down, your job next round, the fix)
-	std::vector<std::string> SummaryWindowLines(const Ctx& c);
-
-	// The Summary tab (the v6 design, style 3b): the round for both sides, your down as a chain, your job next round
-	void SummaryTab(const Ctx& c);
+	// The debrief (the window's left side, the v10 design): the round with its strip and three reasons, you, the squad's
+	// downs as the game's squad window, the enemy, the best this round, the calls; every part opens its detail at the
+	// right and has more on hover
+	void Debrief(const Ctx& c);
+	// The small window: the result, the strip, then the lines picked (aLines: a bit per MiniLine), each with the same
+	// hover as the debrief; a click opens the window at that pane. Returns the height drawn.
+	float SmallWindow(const Ctx& c, float aWidth, unsigned aLines, bool aShadow, bool aStrip);
+	// The calls, each a card that opens who and when (the Summary's calls, now a pane of its own)
+	void CallsView(const Ctx& c);
+	// How to read the debrief (the ? button): what each part shows
+	void HelpView();
+	// Your down that the debrief shows first (the one that killed you, else the last): its Deaths key, "" if none
+	std::string YourDownKey(const Ctx& c);
+	// A spike's hover lines, as the debrief's strip shows them (who went down, both sides' top three skills): the spike of
+	// that side (aAlly) nearest aMs within 1.5 s, drawn into the tooltip that's open; false when there's none
+	bool SpikeTipLines(const Ctx& c, int32_t aMs, bool aAlly);
+	// Deaths in parts: both (the old tab), the list of downs, one down, the revive skills and order
+	enum DeathsMode { DM_Both, DM_List, DM_Detail, DM_Revives };
 	// Your role's number this round against your usual tonight and the best on your spec, and the first fix
 	struct NextRoundFacts
 	{
@@ -296,6 +362,9 @@ namespace Ui
 		int32_t FixSkill = kNoSkill;
 	};
 	NextRoundFacts NextRound(const Ctx& c);
+	// Your lead measure this round (the You tab's first card): where you stand on your spec, for the debrief's rank line
+	struct LeadFacts { bool Has = false, Leads = false, Unknown = false; std::string Name, YouText, BestText, BestWho, UsualText, Gap; int Rank = 1, Of = 1; };
+	LeadFacts YourLead(const Ctx& c);
 	// Our spikes this round and how many damage players landed theirs on time (the Round tab's rule), added up
 	struct SpikeTally { int Spikes = 0, OnTime = 0, Alive = 0; };
 	SpikeTally OurSpikeTally(const Ctx& c);

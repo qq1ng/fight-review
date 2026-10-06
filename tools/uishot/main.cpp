@@ -217,6 +217,7 @@ namespace
 
 	double s_RenderMs = 0; // CPU time of the last Ui::Render()
 	ImVec2 s_Mouse(-FLT_MAX, -FLT_MAX); // --hover: where the mouse rests, to render a tooltip
+	ImVec2 s_WinSize(1153, 680);        // --size: the window's size (the user's, 2026-10-04)
 
 	void Frame()
 	{
@@ -226,8 +227,9 @@ namespace
 		io.MousePos = s_Mouse;
 		ImGui_ImplDX11_NewFrame();
 		ImGui::NewFrame();
+		// (the small window draws first: shown alone, it keeps its own size)
 		ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_Always);
-		ImGui::SetNextWindowSize(ImVec2(980, 860), ImGuiCond_Always);
+		if (Ui::ShowWindow) { ImGui::SetNextWindowSize(s_WinSize, ImGuiCond_Always); }
 		auto t0 = std::chrono::steady_clock::now();
 		Ui::Render();
 		s_RenderMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -301,12 +303,15 @@ int main(int argc, char** argv)
 		return 0;
 	}
 	std::string out = ".";
-	bool timing = false, jobs = false;
+	bool timing = false, jobs = false, rounds = false;
 	std::string as; // --as <spec>: review the latest round as a player on that spec
 	std::string round; // --round <part of a log name>: review that round
 	std::string down;  // --down <player name>: the Deaths tab opens on their last down in that round
+	std::string downAccount; // (that player)
+	int hoverPane = Ui::P_Home; // --hoverpane <n>: the pane the --hover shots show (Ui::Pane)
 	float scale = 1.0f; // --scale <x>: a wider font, like the game's
-	std::vector<ImVec2> hovers; // --hover <x,y>: the Summary tab with the mouse resting there (summary_hover_N.png)
+	std::vector<ImVec2> hovers; // --hover <x,y>: the window on its first pane with the mouse resting there (hover_N.png)
+	std::vector<ImVec2> miniHovers; // --minihover <x,y>: the small window with the mouse resting there (small_hover_N.png)
 	std::string ini;            // --ini <arcdps.ini>: also render the empty window's first-run check against it (first_run.png)
 	std::string settings;       // --settings <settings.txt>: the addon's settings (the summary window's style); saved back to it
 	std::vector<Session::FightPtr> fights;
@@ -319,16 +324,25 @@ int main(int argc, char** argv)
 		if (std::strcmp(argv[i], "--out") == 0 && i + 1 < argc) { out = argv[++i]; continue; }
 		if (std::strcmp(argv[i], "--time") == 0) { timing = true; continue; }
 		if (std::strcmp(argv[i], "--jobs") == 0) { jobs = true; continue; }
+		if (std::strcmp(argv[i], "--rounds") == 0) { rounds = true; continue; }
+		if (std::strcmp(argv[i], "--hoverpane") == 0 && i + 1 < argc) { hoverPane = std::atoi(argv[++i]); continue; }
 		if (std::strcmp(argv[i], "--as") == 0 && i + 1 < argc) { as = argv[++i]; continue; }
 		if (std::strcmp(argv[i], "--round") == 0 && i + 1 < argc) { round = argv[++i]; continue; }
 		if (std::strcmp(argv[i], "--down") == 0 && i + 1 < argc) { down = argv[++i]; continue; }
 		if (std::strcmp(argv[i], "--scale") == 0 && i + 1 < argc) { scale = static_cast<float>(std::atof(argv[++i])); continue; }
 		if (std::strcmp(argv[i], "--ini") == 0 && i + 1 < argc) { ini = argv[++i]; continue; }
 		if (std::strcmp(argv[i], "--settings") == 0 && i + 1 < argc) { settings = argv[++i]; continue; }
-		if (std::strcmp(argv[i], "--hover") == 0 && i + 1 < argc)
+		if ((std::strcmp(argv[i], "--hover") == 0 || std::strcmp(argv[i], "--minihover") == 0) && i + 1 < argc)
 		{
+			bool mini = argv[i][2] == 'm';
 			float hx = 0, hy = 0;
-			if (std::sscanf(argv[++i], "%f,%f", &hx, &hy) == 2) { hovers.push_back(ImVec2(hx, hy)); }
+			if (std::sscanf(argv[++i], "%f,%f", &hx, &hy) == 2) { (mini ? miniHovers : hovers).push_back(ImVec2(hx, hy)); }
+			continue;
+		}
+		if (std::strcmp(argv[i], "--size") == 0 && i + 1 < argc)
+		{
+			float w = 0, h = 0;
+			if (std::sscanf(argv[++i], "%fx%f", &w, &h) == 2) { s_WinSize = ImVec2(std::min(w, kWidth - 40.0f), std::min(h, kHeight - 40.0f)); }
 			continue;
 		}
 		if (std::strcmp(argv[i], "--memory") == 0) { memory = true; continue; }
@@ -390,6 +404,20 @@ int main(int argc, char** argv)
 		for (auto& [k, v] : parts) { sorted.push_back({v, k}); }
 		std::sort(sorted.rbegin(), sorted.rend());
 		for (auto& [v, k] : sorted) { std::printf("  %7.2f MB  %s\n", v / 1048576.0, k.c_str()); }
+		return 0;
+	}
+	if (rounds)
+	{
+		// --rounds: each round's length, downs each side, and the recorder's own downs (to pick one for --round)
+		for (const auto& f : fights)
+		{
+			int downs = 0, died = 0;
+			if (f->Pov >= 0)
+			{
+				for (const auto& sp : f->Players[f->Pov].DownSpans) { downs += !sp.Dead; died += sp.Dead; }
+			}
+			std::printf("%s  %4lld s  downed %2d : %2d  you: %d downs, %d died\n", f->Stamp.c_str(), static_cast<long long>(f->DurationMs / 1000), f->EnemyDowns, f->SquadDowns, downs, died);
+		}
 		return 0;
 	}
 	if (jobs)
@@ -457,20 +485,21 @@ int main(int argc, char** argv)
 		for (const auto& sp : p.DownSpans)
 		{
 			if (sp.Dead) { continue; }
-			if (nth < 0 || n == nth) { Ui::S().DeathKey = shown.Stamp + "/" + p.Account + "/" + std::to_string(sp.From); }
+			if (nth < 0 || n == nth) { Ui::S().DeathKey = shown.Stamp + "/" + p.Account + "/" + std::to_string(sp.From); downAccount = p.Account; }
 			n++;
 		}
 	}
 	if (timing)
 	{
 		// The window is drawn every frame in game, so its CPU time per frame is what the player pays
-		struct Case { const char* Name; int Tab; bool AllRounds; };
-		const Case cases[] = {{"summary", Ui::T_Summary, false}, {"you, this round", Ui::T_You, false}, {"you, tonight", Ui::T_You, true}, {"deaths", Ui::T_Deaths, false},
-			{"compare, this round", Ui::T_Compare, false}, {"compare, tonight", Ui::T_Compare, true}, {"round", Ui::T_Round, false},
-			{"squad, this round", Ui::T_Squad, false}, {"squad, tonight", Ui::T_Squad, true}};
+		// (the debrief at the left is in every case)
+		struct Case { const char* Name; int Pane; bool AllRounds; };
+		const Case cases[] = {{"debrief, first pane", Ui::P_Home, false}, {"you, this round", Ui::P_You, false}, {"your night", Ui::P_Night, true},
+			{"a down", Ui::P_Down, false}, {"downs", Ui::P_Downs, false}, {"compare, this round", Ui::P_Compare, false}, {"compare, tonight", Ui::P_Compare, true},
+			{"round", Ui::P_Round, false}, {"squad", Ui::P_Squad, false}, {"calls", Ui::P_Calls, false}};
 		for (const Case& k : cases)
 		{
-			Ui::ForcedTab = k.Tab;
+			Ui::ForcedPane = k.Pane;
 			Ui::S().YouTonight = Ui::S().CompareTonight = Ui::S().SquadTonight = k.AllRounds;
 			// the first frames build the tab's caches (a hitch when switching tab or when a round arrives)
 			double first = 0;
@@ -484,16 +513,16 @@ int main(int argc, char** argv)
 		// depends on the rounds; the rest of the night's work is kept
 		if (fights.size() >= 2)
 		{
-			for (int tab : {Ui::T_Summary, Ui::T_You})
+			for (int pane : {Ui::P_Home, Ui::P_You})
 			{
-				Ui::ForcedTab = tab;
+				Ui::ForcedPane = pane;
 				Ui::S().YouTonight = false;
 				Session::SetForTest(std::vector<Session::FightPtr>(fights.begin(), fights.end() - 1));
 				for (int n = 0; n < 5; n++) { Frame(); }
 				Session::SetForTest(fights);
 				double first = 0;
 				for (int n = 0; n < 3; n++) { Frame(); first = std::max(first, s_RenderMs); }
-				std::printf("%-22s first frames up to %.1f ms when round %zu arrives\n", tab == Ui::T_Summary ? "summary, new round" : "you, new round", first, fights.size());
+				std::printf("%-22s first frames up to %.1f ms when round %zu arrives\n", pane == Ui::P_Home ? "debrief, new round" : "you, new round", first, fights.size());
 			}
 		}
 		// The round with the most downs: Round and Deaths, the revive order open
@@ -502,15 +531,17 @@ int main(int argc, char** argv)
 		Ui::S().Selected = busiest;
 		Ui::S().YouTonight = Ui::S().CompareTonight = Ui::S().SquadTonight = false;
 		Ui::ForcedOpen = Ui::kForceReviveOrder;
-		for (int tab : {Ui::T_Round, Ui::T_Deaths})
+		for (int pane : {Ui::P_Round, Ui::P_Downs, Ui::P_Down, Ui::P_Revives})
 		{
-			Ui::ForcedTab = tab;
+			Ui::ForcedPane = pane;
 			for (int n = 0; n < 3; n++) { Frame(); }
 			double sum = 0, worst = 0;
 			for (int n = 0; n < 30; n++) { Frame(); sum += s_RenderMs; worst = std::max(worst, s_RenderMs); }
-			std::printf("%s, round %d %5.2f ms per frame (worst %.2f), %d downs\n", tab == Ui::T_Round ? "round" : "deaths", busiest + 1, sum / 30, worst, fights[busiest]->SquadDowns);
+			const char* name = pane == Ui::P_Round ? "round" : pane == Ui::P_Downs ? "downs" : pane == Ui::P_Down ? "a down" : "revives";
+			std::printf("%s, round %d %5.2f ms per frame (worst %.2f), %d downs\n", name, busiest + 1, sum / 30, worst, fights[busiest]->SquadDowns);
 		}
 		Ui::ForcedOpen = -1;
+		Ui::ForcedPane = -1;
 		Ui::S().Selected = -1;
 		Ui::ShowWindow = false;
 		Ui::ShowMini = true;
@@ -547,54 +578,66 @@ int main(int argc, char** argv)
 		bool ok = cut ? SavePng(wpath, clampTo(x0, kWidth), clampTo(y0, kHeight), clampTo(x1 + 1, kWidth), clampTo(y1 + 1, kHeight)) : SavePng(wpath);
 		std::printf("%s %s\n", ok ? "saved" : "FAILED", path.c_str());
 	};
-	struct Shot { const char* Name; int Tab; int Metric; int Open; };
-	const Shot shots[] = {{"summary_tab", Ui::T_Summary, -1, -1}, {"you", Ui::T_You, -1, -1}, {"you_open", Ui::T_You, -1, 0}, {"compare_role", Ui::T_Compare, -1, -1}, {"compare_heal", Ui::T_Compare, 0, -1},
-		{"compare_dmg", Ui::T_Compare, 2, -1}, {"squad", Ui::T_Squad, -1, -1}, {"tonight", Ui::T_You, -1, -2}, {"deaths", Ui::T_Deaths, -1, -1}, {"round", Ui::T_Round, -1, -1}};
+	// The window: the debrief at the left, a pane at the right (the v10 design)
+	struct Shot { const char* Name; int Pane; int Metric; int Open; };
+	const Shot shots[] = {{"home", Ui::P_Home, -1, -1}, {"you", Ui::P_You, -1, -1}, {"you_open", Ui::P_You, -1, 0}, {"night", Ui::P_Night, -1, -1},
+		{"compare_role", Ui::P_Compare, -1, -1}, {"compare_heal", Ui::P_Compare, 0, -1}, {"compare_dmg", Ui::P_Compare, 2, -1}, {"squad", Ui::P_Squad, -1, -1},
+		{"down", Ui::P_Down, -1, -1}, {"downs", Ui::P_Downs, -1, -1}, {"round", Ui::P_Round, -1, -1}, {"help", Ui::P_Help, -1, -1}};
 	for (const Shot& s : shots)
 	{
-		Ui::ForcedTab = s.Tab;
+		Ui::ForcedPane = s.Pane;
 		Ui::ForcedMetric = s.Metric;
-		Ui::ForcedOpen = s.Open == -2 ? -1 : s.Open;
-		Ui::S().YouTonight = s.Open == -2; // -2: You on Tonight
+		Ui::ForcedOpen = s.Open;
 		save(s.Name);
-		Ui::S().YouTonight = false;
+	}
+	// a down opened from the squad grid: Earlier and Later through that player's downs
+	if (!downAccount.empty())
+	{
+		Ui::ForcedPane = Ui::P_Down;
+		Ui::S().DeathFilter = 5;
+		Ui::S().DeathPlayer = downAccount;
+		save("down_player");
+		Ui::S().DeathFilter = 0;
 	}
 	Ui::ForcedMetric = -1;
 	Ui::ForcedOpen = -1;
-	// the Summary's calls, closed and with a card open
-	Ui::ForcedTab = Ui::T_Summary;
-	save("summary_calls", true);
+	// the calls, closed and with a card open
+	Ui::ForcedPane = Ui::P_Calls;
+	save("calls");
+	save("calls_bottom", true);
 	Ui::S().CallOpen = "warrior";
-	save("summary_calls_warrior", true);
+	save("calls_warrior");
 	Ui::S().CallPartOpen = {"warrior/SPEAR OPENER", "warrior/MELEE BURST"};
-	save("summary_calls_warrior_open", true);
+	save("calls_warrior_open");
 	Ui::S().CallPartOpen.clear();
 	Ui::S().CallOpen = "tale";
-	save("summary_calls_tale", true);
+	save("calls_tale", true);
 	Ui::S().CallOpen = "renegade";
-	save("summary_calls_renegade", true);
+	save("calls_renegade", true);
 	Ui::S().CallOpen = "wells";
-	save("summary_calls_wells", true);
+	save("calls_wells");
+	Ui::S().CallOpen = "stab";
+	save("calls_stab", true);
+	Ui::S().CallOpen = "chrono";
+	save("calls_chrono");
 	Ui::S().CallOpen.clear();
-	Ui::ForcedTab = Ui::T_Squad;
+	Ui::ForcedPane = Ui::P_Squad;
 	Ui::S().ColumnSet = 2; // Defence
 	save("squad_defence");
 	Ui::S().ColumnSet = -1;
 	for (size_t i = 0; i < hovers.size(); i++)
 	{
-		Ui::ForcedTab = Ui::T_Summary;
+		Ui::ForcedPane = hoverPane;
 		s_Mouse = hovers[i];
-		save(("summary_hover_" + std::to_string(i + 1)).c_str());
+		save(("hover_" + std::to_string(i + 1)).c_str());
 	}
 	s_Mouse = ImVec2(-FLT_MAX, -FLT_MAX);
-	// Deaths' revives view (the revive order open), and Round scrolled to the end
-	Ui::ForcedTab = Ui::T_Deaths;
+	// the revives pane (the revive order open), and Round scrolled to the end
+	Ui::ForcedPane = Ui::P_Revives;
 	Ui::ForcedOpen = Ui::kForceReviveOrder;
-	Ui::S().DeathFilter = 3;
 	save("revives");
-	Ui::S().DeathFilter = 0;
 	Ui::ForcedOpen = -1;
-	Ui::ForcedTab = Ui::T_Round;
+	Ui::ForcedPane = Ui::P_Round;
 	save("round_bottom", true);
 	// Two skills marked: the round's two most damaging skills, then the round's biggest spike of ours broken down
 	{
@@ -672,7 +715,7 @@ int main(int argc, char** argv)
 		for (const auto& p : shown.Players) { if (!p.Pov) { others.push_back(p.Account); } }
 		if (others.size() >= 2)
 		{
-			Ui::ForcedTab = Ui::T_Compare;
+			Ui::ForcedPane = Ui::P_Compare;
 			Ui::S().CompareLeft = others[0];
 			Ui::S().CompareRight = others[1];
 			save("compare_pair");
@@ -680,16 +723,23 @@ int main(int argc, char** argv)
 			Ui::S().CompareRight.clear();
 		}
 	}
-	// The small summary window on its own
+	// The small window on its own (250 px wide, as ArcDPS' windows), and with the mouse resting on its lines
 	Ui::ShowWindow = false;
 	Ui::ShowMini = true;
-	save("summary");
+	Ui::ForcedPane = -1;
+	save("small");
+	for (size_t i = 0; i < miniHovers.size(); i++)
+	{
+		s_Mouse = miniHovers[i];
+		save(("small_hover_" + std::to_string(i + 1)).c_str());
+	}
+	s_Mouse = ImVec2(-FLT_MAX, -FLT_MAX);
 	// No rounds yet: the first-run check against the given arcdps.ini
 	if (!ini.empty())
 	{
 		Ui::ShowMini = false;
 		Ui::ShowWindow = true;
-		Ui::ForcedTab = -1;
+		Ui::ForcedPane = -1;
 		Ui::SetArcdpsIni(ini);
 		Session::SetForTest({});
 		save("first_run");

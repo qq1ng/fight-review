@@ -33,7 +33,6 @@ namespace Analysis
 		constexpr int64_t kInstantSlack = 100; // and an instant cast this much either side
 		constexpr int64_t kBoonDelay = 750;    // some skills grant their boons this long after the cast
 		// Tuned with tools/spike_sweep.py (2026-09-24): trained on 56 rounds, checked on 110 others
-		constexpr int64_t kSpikeRadiusS = 2;
 		constexpr double kSpikeOverMedian = 1.4, kSpikeOfMax = 0.5;
 		constexpr int64_t kIntoOurs = 2000, kAheadOfTheirs = 4000, kAnsweringTheirs = 3000;
 		constexpr uint32_t kResurrect = 1066;     // the plain revive: animation dst = the ally
@@ -74,42 +73,64 @@ namespace Analysis
 			return -1;
 		}
 
-		std::vector<int64_t> Spikes(const std::vector<int64_t>& aSeries)
+		// A spike: a run of seconds at or over the floor (1.4x the round's median busy second, or half its biggest, whichever
+		// is more), a 1 s dip bridged while it stays over the median; its peak the run's highest second (the user,
+		// 2026-10-06: the enemy's 12 s assault at 22:00 showed as three spikes, peaks 3 s apart). Scored against downs on
+		// 166 rounds (scratch merge_eval.py on data/spike_series_*.tsv): precision as before (ours 0.63, theirs 0.59),
+		// recall 0.80 / 0.85 against 0.68 / 0.73; 3.8 / 4.1 a minute against 4.2 / 4.5; 2.6 s long on average
+		struct SpikeRun { int64_t Peak = 0; int32_t From = 0, To = 0; };
+		std::vector<SpikeRun> Spikes(const std::vector<int64_t>& aSeries)
 		{
 			std::vector<int64_t> busy;
 			for (int64_t v : aSeries) { if (v > 0) { busy.push_back(v); } }
-			std::vector<int64_t> out;
+			std::vector<SpikeRun> out;
 			if (busy.empty()) { return out; }
 			std::sort(busy.begin(), busy.end());
 			double median = busy.size() % 2 ? busy[busy.size() / 2] : (busy[busy.size() / 2 - 1] + busy[busy.size() / 2]) / 2.0;
 			double floor = std::max(kSpikeOverMedian * median, kSpikeOfMax * busy.back());
-			int64_t last = -1000;
+			int64_t a = -1, b = -1; // the run being built: first and last second
+			auto close = [&]()
+			{
+				if (a < 0) { return; }
+				int64_t top = a;
+				for (int64_t i = a; i <= b; i++) { if (aSeries[i] > aSeries[top]) { top = i; } }
+				out.push_back({top * 1000 + 500, static_cast<int32_t>(a * 1000), static_cast<int32_t>((b + 1) * 1000)});
+				a = b = -1;
+			};
 			for (int64_t i = 0; i < static_cast<int64_t>(aSeries.size()); i++)
 			{
-				int64_t v = aSeries[i];
-				if (v < floor) { continue; }
-				bool peak = true;
-				for (int64_t j = std::max<int64_t>(0, i - kSpikeRadiusS); j <= std::min<int64_t>(aSeries.size() - 1, i + kSpikeRadiusS); j++)
-				{
-					if (aSeries[j] > v) { peak = false; break; }
-				}
-				if (peak && i - last > kSpikeRadiusS)
-				{
-					out.push_back(i * 1000 + 500);
-					last = i;
-				}
+				if (aSeries[i] < floor) { continue; }
+				const bool joins = a >= 0 && (b == i - 1 || (b == i - 2 && aSeries[i - 1] >= median));
+				if (!joins) { close(); a = i; }
+				b = i;
 			}
+			close();
 			return out;
 		}
 
+		// A spike's first and last seconds' middles (from fight start): its peak for a one-second spike
+		std::pair<int64_t, int64_t> RunOf(const std::vector<int64_t>& aPeaks, const std::vector<std::pair<int32_t, int32_t>>& aSpans, size_t i)
+		{
+			if (i >= aSpans.size()) { return {aPeaks[i], aPeaks[i]}; }
+			return {std::min<int64_t>(aPeaks[i], aSpans[i].first + 500), std::max<int64_t>(aPeaks[i], aSpans[i].second - 500)};
+		}
+
+		// The timing classes, against each spike's run (2026-10-06; the same as against the peak for a one-second spike):
+		// into ours from 2 s before its run to 2 s after, ahead of theirs in the 4 s before its run starts, answering theirs
+		// from its start to 3 s after its end
 		std::array<bool, T_Count> Classify(int64_t aT, const Fight& aFight)
 		{
 			std::array<bool, T_Count> c{};
-			for (int64_t s : aFight.OurSpikesMs) { if (std::llabs(aT - s) <= kIntoOurs) { c[T_IntoOurs] = true; } }
-			for (int64_t s : aFight.TheirSpikesMs)
+			for (size_t i = 0; i < aFight.OurSpikesMs.size(); i++)
 			{
-				if (s - aT > 0 && s - aT <= kAheadOfTheirs) { c[T_AheadOfTheirs] = true; }
-				if (aT - s >= 0 && aT - s <= kAnsweringTheirs) { c[T_AnsweringTheirs] = true; }
+				auto [first, last] = RunOf(aFight.OurSpikesMs, aFight.OurSpikeSpans, i);
+				if (aT >= first - kIntoOurs && aT <= last + kIntoOurs) { c[T_IntoOurs] = true; }
+			}
+			for (size_t i = 0; i < aFight.TheirSpikesMs.size(); i++)
+			{
+				auto [first, last] = RunOf(aFight.TheirSpikesMs, aFight.TheirSpikeSpans, i);
+				if (first - aT > 0 && first - aT <= kAheadOfTheirs) { c[T_AheadOfTheirs] = true; }
+				if (aT >= first && aT <= last + kAnsweringTheirs) { c[T_AnsweringTheirs] = true; }
 			}
 			return c;
 		}
@@ -460,6 +481,7 @@ namespace Analysis
 		std::unordered_set<uint64_t> friends, foes, squad, present;
 		std::unordered_map<uint64_t, std::map<uint64_t, std::pair<int, int64_t>>> healMoments; // source -> time -> (heals, amount)
 		std::unordered_map<uint64_t, int64_t> healTotal;
+		std::unordered_map<uint64_t, uint32_t> teamOf; // player -> WvW team id
 		for (auto& [addr, a] : log.Agents)
 		{
 			if (!a.Player) { continue; }
@@ -484,6 +506,11 @@ namespace Analysis
 			case SC_SqCombatEnd: end = std::max<int64_t>(end, e.Time); break;
 			case SC_PointOfView: pov = e.Src; break;
 			case SC_MapId: f.MapId = static_cast<uint32_t>(e.Src); break;
+			case SC_TeamChange:
+				// the new team: dst when it's set, else value (where this ArcDPS build writes it; the readme says dst)
+				if (uint32_t t = e.Dst ? static_cast<uint32_t>(e.Dst) : static_cast<uint32_t>(e.Value); t) { teamOf[e.Src] = t; }
+				break;
+			case SC_WvwTeams: f.TeamIds = {static_cast<uint32_t>(e.Dst >> 32), static_cast<uint32_t>(e.Value), static_cast<uint32_t>(e.BuffDmg)}; break;
 			case SC_BuffInfo:
 				if (int b = BoonIndex(e.Skill); b >= 0) { uint8_t type = e.Pad61 & 0xFF; f.Intensity[b] = type == 0 || type == 4; }
 				break;
@@ -498,6 +525,26 @@ namespace Analysis
 				break;
 			default: break;
 			}
+		}
+		// a player's WvW team as a colour (0 red, 1 blue, 2 green), -1 when the log doesn't say
+		auto colourOf = [&](uint64_t aAddr) -> int
+		{
+			auto t = teamOf.find(aAddr);
+			if (t == teamOf.end()) { return -1; }
+			for (int c = 0; c < 3; c++) { if (f.TeamIds[c] && f.TeamIds[c] == t->second) { return c; } }
+			return -1;
+		};
+		{
+			// the squad's colour: most of its members'
+			int n[3] = {0, 0, 0};
+			for (uint64_t a : squad) { if (int c = colourOf(a); c >= 0) { n[c]++; } }
+			for (int c = 0; c < 3; c++) { if (n[c] > 0 && (f.SquadTeam < 0 || n[c] > n[f.SquadTeam])) { f.SquadTeam = c; } }
+		}
+		// players of our own server outside the squad are nameless like enemies, but their team says they're allies: not
+		// foes (2 Oct 20:18: a red "enemy" who never hit us, whose death counted as an enemy's)
+		if (f.SquadTeam >= 0)
+		{
+			for (auto it = foes.begin(); it != foes.end();) { it = colourOf(*it) == f.SquadTeam ? foes.erase(it) : std::next(it); }
 		}
 		// Heals that reached the log late, in one batch: another player's Healing Stats sends their heals over the
 		// network, and a backlog arrives stamped with one moment (25 Sept: a Troubadour's 159k of healing all at 1:30,
@@ -590,7 +637,11 @@ namespace Analysis
 		{
 			if (!foes.count(aAddr)) { return -1; }
 			auto [it, added] = enemyIndex.emplace(aAddr, static_cast<int>(f.Enemies.size()));
-			if (added) { f.Enemies.push_back({SpecName(log.Agents.at(aAddr)), {}}); }
+			if (added)
+			{
+				f.Enemies.push_back({SpecName(log.Agents.at(aAddr)), {}});
+				f.Enemies.back().Team = colourOf(aAddr);
+			}
 			return it->second;
 		};
 		const size_t seconds = static_cast<size_t>(f.DurationMs / 1000 + 1);
@@ -628,6 +679,26 @@ namespace Analysis
 		struct SignetOff { uint64_t Player; uint32_t Buff; int64_t Time; };
 		std::unordered_map<uint64_t, SignetOff> signetOff; // player ^ buff -> when its passive came off
 		std::unordered_set<uint64_t> ownBuff;              // player ^ buff: last applied by the player themselves
+		// Unblockable and Signet of Might's ready buff, per player (Player::UnblockableOn, MightSignetReady): a count of
+		// stacks on, a span from the first on to the last off
+		std::unordered_set<int32_t> unblockIds;
+		int32_t mightSignetId = 0;
+		for (auto& [id, n] : log.Skills) { if (n == "Unblockable") { unblockIds.insert(id); } else if (n == "Signet of Might") { mightSignetId = id; } }
+		struct OpenSpan { int Count = 0; int64_t Since = 0; };
+		std::unordered_map<uint64_t, OpenSpan> unblockOpen, signetOpen;
+		auto spanOn = [&](std::unordered_map<uint64_t, OpenSpan>& aOpen, uint64_t aWho, int64_t aT)
+		{
+			OpenSpan& o = aOpen[aWho];
+			if (o.Count++ == 0) { o.Since = aT; }
+		};
+		auto spanOff = [&](std::unordered_map<uint64_t, OpenSpan>& aOpen, uint64_t aWho, int64_t aT, bool aAll, std::vector<std::pair<int32_t, int32_t>> Player::*aSpans)
+		{
+			auto it = aOpen.find(aWho);
+			if (it == aOpen.end() || it->second.Count <= 0) { return; }
+			it->second.Count = aAll ? 0 : it->second.Count - 1;
+			if (it->second.Count > 0) { return; }
+			if (Player* p = player(aWho)) { (p->*aSpans).push_back({rel(it->second.Since), rel(aT)}); }
+		};
 		struct BuffUse { uint64_t Player; uint32_t Id; int64_t T; };
 		std::vector<BuffUse> buffUses; // added after the events, unless the skill's own cast is there (see below)
 		auto noteUse = [&](uint64_t aPlayer, uint32_t aId, int64_t aT)
@@ -641,6 +712,18 @@ namespace Analysis
 		std::unordered_map<uint64_t, std::array<std::vector<int64_t>, kBoons>> boonApplied; // source -> boon -> times
 		std::unordered_map<uint64_t, std::array<std::vector<int32_t>, kBoons>> boonDurations; // source -> boon -> durations given to others
 		std::unordered_map<uint64_t, int64_t> lastStabStrip; // holder -> when the enemy last removed all their stability
+		std::unordered_map<uint64_t, int64_t> lastFoeStabStrip; // enemy -> when we last removed all their stability
+		// what made an ally invulnerable, for the enemy hits it absorbed: Distortion (Tale of the August Queen, a Mesmer's
+		// own), or Determined and Resurrection, which come with going down and with a revive (5 Oct: 58% and 38% of the hits
+		// absorbed; the user, 2026-10-06: absorbed hits outside any Tale looked like invulnerability nobody used)
+		std::unordered_map<uint64_t, int64_t> distortionUntil, downInvulnUntil;
+		std::unordered_map<uint32_t, bool> downInvulnId;
+		auto isDownInvuln = [&](uint32_t aSkill)
+		{
+			auto it = downInvulnId.find(aSkill);
+			if (it == downInvulnId.end()) { std::string n = log.SkillName(static_cast<int32_t>(aSkill)); it = downInvulnId.emplace(aSkill, n == "Determined" || n == "Resurrection").first; }
+			return it->second;
+		};
 		std::unordered_map<uint64_t, std::vector<int64_t>> guardianSelfStab; // Guardian -> stability they gave themselves
 		uint64_t commander = 0;
 		// Boons
@@ -685,6 +768,17 @@ namespace Analysis
 			{
 				if (e.Dst && friends.count(e.Dst))
 				{
+					if (Player* p = player(e.Dst); p && !e.Buff && (e.Result == RESULT_ABSORB || e.Result == RESULT_BLOCK || e.Result == RESULT_EVADE || e.Result == RESULT_BLIND))
+					{
+						// an enemy strike that did nothing: what took it
+						if (uint64_t o = owner(e.Src, e.SrcMaster); foes.count(o))
+						{
+							uint8_t kind = e.Result == RESULT_BLOCK ? 1 : e.Result == RESULT_EVADE ? 2 : e.Result == RESULT_BLIND ? 3 : 5;
+							if (kind == 5 && distortionUntil[e.Dst] > t) { kind = 0; }
+							else if (kind == 5 && downInvulnUntil[e.Dst] > t) { kind = 4; }
+							f.NegatedHits.push_back({rel(t), static_cast<int32_t>(e.Skill), static_cast<int>(index[e.Dst]), enemy(o), kind});
+						}
+					}
 					if (Player* p = player(e.Dst))
 					{
 						if (e.Result == RESULT_ABSORB)
@@ -737,13 +831,14 @@ namespace Analysis
 						p->Damage += dmg; p->Skills[static_cast<int32_t>(e.Skill)].Damage += dmg;
 						if (inWindow) { toPlayersPerS[bin] += dmg; }
 						p->HitsOut.push_back({rel(t), static_cast<int32_t>(e.Skill), static_cast<int32_t>(dmg), enemy(e.Dst), e.Buff ? 0 : static_cast<int32_t>(std::min<int64_t>(e.Overstack, dmg))});
+						f.SquadDamage += dmg; // to enemy players, as EnemyDamage is to ours (pets: SquadPetsTook, EnemyPetsTook)
 					}
-					f.SquadDamage += dmg;
 					if (inWindow) { f.OutPerS[bin] += dmg; p->DamagePerS[bin] += static_cast<int32_t>(dmg); }
 				}
 				else if (Player* hit = player(e.Dst); hit && !friends.count(o))
 				{
 					hit->DamageTaken += dmg;
+					if (!e.Buff) { f.StrikesIn.push_back({rel(t), static_cast<int>(index[e.Dst])}); }
 					hit->HitsIn.push_back({rel(t), static_cast<int32_t>(e.Skill), static_cast<int32_t>(dmg), enemy(o), e.Buff ? 0 : static_cast<int32_t>(std::min<int64_t>(e.Overstack, dmg))});
 					f.GroupDamageTaken[hit->Subgroup] += dmg;
 					f.EnemyDamage += dmg;
@@ -794,6 +889,11 @@ namespace Analysis
 			}
 			case SC_BuffRemoveAll:
 			{
+				if (e.Skill == 10243) { distortionUntil[e.Src] = std::min(distortionUntil[e.Src], t); }
+				else if (isDownInvuln(e.Skill)) { downInvulnUntil[e.Src] = std::min(downInvulnUntil[e.Src], t); }
+				if (e.Skill == kBoonIds[kStability] && foes.count(e.Src)) { lastFoeStabStrip[e.Src] = t; }
+				if (unblockIds.count(static_cast<int32_t>(e.Skill))) { spanOff(unblockOpen, e.Src, t, true, &Player::UnblockableOn); }
+				if (mightSignetId && static_cast<int32_t>(e.Skill) == mightSignetId) { spanOff(signetOpen, e.Src, t, true, &Player::MightSignetReady); }
 				// Illusion of Life ending: ran out (at its full length) or ended early
 				if (Player* holder = player(e.Src); holder && isIllusion(e.Skill) && !holder->IllusionOfLife.empty())
 				{
@@ -906,6 +1006,8 @@ namespace Analysis
 				break;
 			case SC_BuffApply: case SC_BuffInitial:
 			{
+				if (unblockIds.count(static_cast<int32_t>(e.Skill)) && player(e.Dst)) { spanOn(unblockOpen, e.Dst, t); }
+				if (mightSignetId && static_cast<int32_t>(e.Skill) == mightSignetId && player(e.Dst)) { spanOn(signetOpen, e.Dst, t); }
 				// who put each buff on a player last: themselves (a signet's passive) or someone else
 				if (player(e.Dst)) { uint64_t k = e.Dst * 1000003ULL ^ e.Skill; if (e.Src == e.Dst) { ownBuff.insert(k); } else { ownBuff.erase(k); } }
 				// a profession mechanic switched on: its buff of the same name on the player
@@ -919,6 +1021,11 @@ namespace Analysis
 				// invulnerability on one of ours, and who gave it: Distortion (a Mesmer's own, a Troubadour's Tale of the August
 				// Queen on the group). 30 Sept: on in 7 of 10 moments a hit on one of ours was absorbed. (Determined, 1 s,
 				// comes only with going down.)
+				if (e.StateChange == SC_BuffApply && e.Value > 0 && friends.count(e.Dst))
+				{
+					if (e.Skill == 10243) { distortionUntil[e.Dst] = std::max(distortionUntil[e.Dst], t + e.Value); }
+					else if (isDownInvuln(e.Skill)) { downInvulnUntil[e.Dst] = std::max(downInvulnUntil[e.Dst], t + e.Value); }
+				}
 				if (e.StateChange == SC_BuffApply && e.Skill == 10243 && e.Value > 0)
 				{
 					auto to = index.find(e.Dst), by = index.find(e.Src);
@@ -995,7 +1102,15 @@ namespace Analysis
 			}
 			case SC_BuffRemoveSingle:
 			{
+				if (unblockIds.count(static_cast<int32_t>(e.Skill))) { spanOff(unblockOpen, e.Src, t, false, &Player::UnblockableOn); }
+				if (mightSignetId && static_cast<int32_t>(e.Skill) == mightSignetId) { spanOff(signetOpen, e.Src, t, false, &Player::MightSignetReady); }
 				uint64_t key = stackKey(e.Src, e.Pad61);
+				// an enemy's stability stack one of ours took on its own, not in a strip: our CC that it blocked
+				if (e.Skill == kBoonIds[kStability] && foes.count(e.Src))
+				{
+					auto ls = lastFoeStabStrip.find(e.Src);
+					if (Player* by = player(owner(e.Dst, 0)); by && (ls == lastFoeStabStrip.end() || t - ls->second > 5)) { by->CcIntoStab++; f.EnemyStabUsedUp++; }
+				}
 				if (auto it = stabIndex.find(key); it != stabIndex.end() && e.Skill == kBoonIds[kStability])
 				{
 					stab[it->second].Removed = std::min(stab[it->second].Removed, t);
@@ -1123,6 +1238,8 @@ namespace Analysis
 			}
 		}
 		for (auto& [key, off] : signetOff) { if (end - off.Time >= 2000) { noteUse(off.Player, off.Buff, off.Time); } }
+		for (auto& [who, o] : unblockOpen) { if (o.Count > 0) { if (Player* p = player(who)) { p->UnblockableOn.push_back({rel(o.Since), rel(end)}); } } }
+		for (auto& [who, o] : signetOpen) { if (o.Count > 0) { if (Player* p = player(who)) { p->MightSignetReady.push_back({rel(o.Since), rel(end)}); } } }
 		// A use seen from a buff or a signet's passive counts unless the player cast a skill of that name within 1.5 s:
 		// then it's that cast, already counted (the buff has an id of its own, so it would be counted twice)
 		{
@@ -1177,13 +1294,12 @@ namespace Analysis
 		f.EnemyCount = static_cast<int>(enemiesSeen.size());
 
 		// Spikes and timing
-		// Our spikes from damage to enemy players only (not NPCs, siege or gates). On 110 rounds of 30 s+ that the
-		// settings weren't tuned on: 63% of our spikes had an enemy down within 1 s before to 4 s after, and 68% of
-		// enemy downs fell in one of our spikes; enemy spikes 59% and 73% (the old settings, radius 3 s, 1.6x the
-		// median, 35% of the biggest second: 59% / 59% and 59% / 62%). 2 s sums scored no better.
-		f.OurSpikesMs = Spikes(toPlayersPerS);
+		// Our spikes from damage to enemy players only (not NPCs, siege or gates). Runs of seconds (Spikes): on 110 rounds of
+		// 30 s+ 63% of our spikes had an enemy down from 1 s before their start to 4 s after their end, and 79% of enemy downs
+		// fell in such a window; enemy spikes 59% and 85%. (Peaks 3 s apart, 2026-09-24 to 10-06: 63% / 68%, 59% / 73%.)
+		for (const SpikeRun& r : Spikes(toPlayersPerS)) { f.OurSpikesMs.push_back(r.Peak); f.OurSpikeSpans.push_back({r.From, r.To}); }
 		f.ToPlayersPerS = std::move(toPlayersPerS);
-		f.TheirSpikesMs = Spikes(f.InPerS);
+		for (const SpikeRun& r : Spikes(f.InPerS)) { f.TheirSpikesMs.push_back(r.Peak); f.TheirSpikeSpans.push_back({r.From, r.To}); }
 		for (size_t s = 0; s < seconds; s++)
 		{
 			auto c = Classify(static_cast<int64_t>(s) * 1000 + 500, f);
@@ -1624,7 +1740,13 @@ namespace Analysis
 				if (!u.Others && u.Duration < 2000) { continue; }
 				Player& p = f.Players[u.By];
 				p.DistortionUses++;
-				p.DistortionInSpikes += std::any_of(f.TheirSpikesMs.begin(), f.TheirSpikesMs.end(), [&](int64_t t) { return u.Ms >= t - 3000 && u.Ms <= t + 4000; });
+				bool in = false;
+				for (size_t i = 0; i < f.TheirSpikesMs.size(); i++)
+				{
+					auto [first, last] = RunOf(f.TheirSpikesMs, f.TheirSpikeSpans, i);
+					in |= u.Ms >= first - 3000 && u.Ms <= last + 4000;
+				}
+				p.DistortionInSpikes += in;
 			}
 		}
 		for (auto* perS : {&f.InvulnOurs, &f.InvulnTheirs})

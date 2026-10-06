@@ -449,6 +449,27 @@ namespace Ui
 		}
 
 		// The steps as tiles in a row, joined by arrows: an icon and the value, a muted word, a line in ink
+		// A down's steps as a chain of icons, the way it ended left out (the row says it): worn down and the burst with
+		// their damage, the stability lost, the CC; each step's words on hover
+		std::vector<ChainStep> ChainOf(const Fight& f, const Detail& det)
+		{
+			std::vector<ChainStep> out;
+			for (const auto& st : det.Steps)
+			{
+				if (st.Skill == -301 || st.Skill == -302) { continue; }
+				ChainStep c;
+				c.Skill = st.Skill; c.Cc = st.Cc; c.Boon = st.Boon;
+				c.Name = st.Word;
+				// a damage step shows its damage; times and "none" stay in the hover
+				bool time = st.Value.size() > 2 && st.Value.compare(st.Value.size() - 2, 2, " s") == 0;
+				if (!time && st.Value != "none") { c.Value = st.Value; }
+				c.Tip = st.Value + (st.Extra.empty() ? "" : "; " + st.Extra);
+				if (st.Skill > 0 && c.Name.empty()) { c.Name = SkillName(f, st.Skill); }
+				out.push_back(c);
+			}
+			return out;
+		}
+
 		void Steps(const Fight& f, const Detail& det)
 		{
 			if (det.Steps.empty()) { return; }
@@ -822,8 +843,9 @@ namespace Ui
 			ImGui::Dummy(ImVec2(1, lh));
 		}
 
-		// The list at the left: every down, grouped by the enemy spike it fell in
-		void List(const Ctx& c, const std::vector<Down>& aDowns, float aWidth, const std::string& aShown)
+		// The list at the left: every down, grouped by the enemy spike it fell in. aWide: the list alone (the debrief's
+		// "all downs"): each down with its cause in a few words and how it ended, and a click opens it
+		void List(const Ctx& c, const std::vector<Down>& aDowns, float aWidth, const std::string& aShown, bool aWide = false)
 		{
 			const Fight& f = *c.F;
 			State& s = S();
@@ -848,14 +870,31 @@ namespace Ui
 			}
 			// the revive skills and the revive order get the right side (the user, 2026-09-26: at the bottom they were hidden)
 			ImGui::SameLine(0, 8);
-			if (seg("Revives", s.DeathFilter == 3)) { s.DeathFilter = 3; }
+			if (seg("Revives", s.DeathFilter == 3)) { if (aWide) { Go(P_Revives); } else { s.DeathFilter = 3; } }
+			// one enemy spike's downs (opened from its "Allied downs"), or one player's (the squad grid): a chip that clears it
+			if (s.DeathFilter == 4 && s.DeathSpike >= 0)
+			{
+				ImGui::SameLine(0, 8);
+				std::string chip = "Enemy spike " + Duration(s.DeathSpike) + "  x";
+				if (seg(chip.c_str(), true)) { s.DeathFilter = 0; s.DeathSpike = -1; }
+				if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Only this spike's downs; click: every down"); }
+			}
+			if (s.DeathFilter == 5)
+			{
+				std::string name = s.DeathPlayer;
+				for (const Player& p : f.Players) { if (p.Account == s.DeathPlayer) { name = p.Name; } }
+				ImGui::SameLine(0, 8);
+				std::string chip = name + "  x";
+				if (seg(chip.c_str(), true)) { s.DeathFilter = 0; }
+				if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Only this player's downs; click: every down"); }
+			}
 			ImGui::PopStyleVar();
 			// groups in time order: each enemy spike's downs, and the downs between spikes (the user, 2026-09-25: a down
 			// outside a spike belongs where it happened, not at the bottom). Key -1: outside a spike.
 			std::vector<std::pair<int64_t, std::vector<const Down*>>> groups;
 			for (const Down& d : aDowns)
 			{
-				int64_t spike = SpikeOf(f.TheirSpikesMs, d.S.From);
+				int64_t spike = SpikeOf(f, false, d.S.From);
 				if (groups.empty() || groups.back().first != spike) { groups.push_back({spike, {}}); }
 				groups.back().second.push_back(&d);
 			}
@@ -867,15 +906,53 @@ namespace Ui
 					std::string key = DownKey(f, *d);
 					ImGui::PushID(key.c_str());
 					ImVec2 p = ImGui::GetCursorScreenPos();
-					if (ImGui::Selectable("##d", key == aShown, 0, ImVec2(0, lh))) { s.DeathKey = key; if (s.DeathFilter == 3) { s.DeathFilter = 0; } }
+					if (ImGui::Selectable("##d", key == aShown, 0, ImVec2(0, lh)))
+					{
+						s.DeathKey = key;
+						if (s.DeathFilter == 3) { s.DeathFilter = 0; }
+						if (aWide) { Go(P_Down); }
+					}
+					bool hovered = ImGui::IsItemHovered();
 					ImDrawList* dl = ImGui::GetWindowDrawList();
 					dl->AddText(p, ImGui::GetColorU32(kMuted), Duration(d->S.From).c_str());
 					// got up: a blue circle; died: an orange cross (the word is in the detail)
-					ImVec2 m(p.x + 48, p.y + lh * 0.5f);
+					ImVec2 m(p.x + lh * 3.2f, p.y + lh * 0.5f);
 					if (d->Died) { dl->AddLine(ImVec2(m.x - 4, m.y - 4), ImVec2(m.x + 4, m.y + 4), kEnemy, 2); dl->AddLine(ImVec2(m.x - 4, m.y + 4), ImVec2(m.x + 4, m.y - 4), kEnemy, 2); }
 					else { dl->AddCircleFilled(m, 4, kYou); }
-					dl->AddText(ImVec2(p.x + 60, p.y), ImGui::GetColorU32(ImGuiCol_Text), (d->P->Name + (d->P->Pov ? " (you)" : "")).c_str());
-					if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s, subgroup %d: %s", d->P->Name.c_str(), d->P->Subgroup, d->Died ? "died" : "got up"); }
+					float nx = p.x + lh * 4;
+					if (aWide) { SpecIconAt(dl, ImVec2(nx, p.y), lh, *d->P); nx += lh + 4; }
+					dl->AddText(ImVec2(nx, p.y), ImGui::GetColorU32(ImGuiCol_Text), (d->P->Name + (d->P->Pov ? " (you)" : "")).c_str());
+					if (aWide)
+					{
+						// the cause in a few words (the cause line's short form), then how it ended
+						// (the cause and its end share what's left of the pane, which can be narrow: the window's right side)
+						const float cSg = p.x + lh * 15, cWhy = cSg + ImGui::CalcTextSize("sg 15").x + lh * 0.6f;
+						const float cEnd = cWhy + std::max(lh * 10, (p.x + ImGui::GetContentRegionAvail().x - cWhy) * 0.56f);
+						dl->AddText(ImVec2(cSg, p.y), ImGui::GetColorU32(kMuted), ("sg " + std::to_string(d->P->Subgroup)).c_str());
+						DeathCause cause = CauseOf(f, *d->P, d->S);
+						// how they went down as icons (the user, 2026-10-05: a series of actions as icons, not words); each
+						// down's steps worked out once per round
+						static std::string chainsKey;
+						static std::map<std::string, std::vector<ChainStep>> chains;
+						if (std::string ck = f.Stamp + "|" + std::to_string(DataVersion()); ck != chainsKey) { chainsKey = ck; chains.clear(); }
+						auto ch = chains.find(key);
+						if (ch == chains.end()) { ch = chains.emplace(key, ChainOf(f, Explain(f, *d))).first; }
+						dl->PushClipRect(ImVec2(cWhy, p.y), ImVec2(cEnd - 8, p.y + lh), true);
+						float cw = ChainAt(dl, ImVec2(cWhy, p.y), lh, ch->second);
+						dl->PopClipRect();
+						hovered = hovered && !ImGui::IsMouseHoveringRect(ImVec2(cWhy, p.y), ImVec2(cWhy + cw, p.y + lh));
+						std::string end = d->Died ? "died" : GotUpHow(f, *d);
+						dl->PushClipRect(ImVec2(cEnd, p.y), ImVec2(p.x + ImGui::GetContentRegionAvail().x, p.y + lh), true);
+						dl->AddText(ImVec2(cEnd, p.y), d->Died ? kEnemy : ImGui::GetColorU32(kMuted), end.c_str());
+						dl->PopClipRect();
+						if (hovered)
+						{
+							std::string line = cause.Line;
+							if (!line.empty()) { line[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(line[0]))); }
+							TipWrapped(line + "\nClick: this down, step by step");
+						}
+					}
+					else if (hovered) { ImGui::SetTooltip("%s, subgroup %d: %s", d->P->Name.c_str(), d->P->Subgroup, d->Died ? "died" : "got up"); }
 					ImGui::PopID();
 				}
 			};
@@ -887,27 +964,33 @@ namespace Ui
 				else { ImGui::TextColored(kMuted, "Outside a spike: %d downed, %d died", static_cast<int>(list.size()), died); }
 				items(list);
 			}
-			ImGui::Spacing();
-			ImGui::TextColored(kMuted, "Circle: got up. Cross: died.");
+			if (!aWide)
+			{
+				ImGui::Spacing();
+				ImGui::TextColored(kMuted, "Circle: got up. Cross: died.");
+			}
 			ImGui::EndChild();
 		}
 	}
 
-	void DeathsTab(const Ctx& c)
+	void DeathsTab(const Ctx& c, int aMode)
 	{
 		const Fight& f = *c.F;
 		State& s = S();
+		if (aMode == DM_Revives) { RevivesTable(c); return; }
 		std::vector<Down> all = Downs(f);
 		std::vector<Down> downs;
 		for (const Down& d : all)
 		{
 			if (s.DeathFilter == 1 && (!c.MeRaw || d.P != c.MeRaw)) { continue; }
 			if (s.DeathFilter == 2 && (!c.MeRaw || d.P->Subgroup != c.MeRaw->Subgroup)) { continue; }
+			if (s.DeathFilter == 4 && SpikeOf(f, false, d.S.From) != s.DeathSpike) { continue; }
+			if (s.DeathFilter == 5 && d.P->Account != s.DeathPlayer) { continue; }
 			downs.push_back(d);
 		}
 		if (all.empty())
 		{
-			Answer("None of ours went down this round.");
+			Answer("No ally went down this round.");
 			ImGui::Spacing();
 			RevivesTable(c);
 			return;
@@ -915,18 +998,63 @@ namespace Ui
 		// The down shown: the one picked, else the first of the enemy spike opened from Round, else yours, else the first
 		const Down* shown = nullptr;
 		for (const Down& d : downs) { if (DownKey(f, d) == s.DeathKey) { shown = &d; } }
-		if (!shown && s.DeathSpike >= 0) { for (const Down& d : downs) { if (!shown && SpikeOf(f.TheirSpikesMs, d.S.From) == s.DeathSpike) { shown = &d; } } }
+		if (!shown && aMode == DM_Detail) { for (const Down& d : all) { if (DownKey(f, d) == s.DeathKey) { shown = &d; } } }
+		if (!shown && s.DeathSpike >= 0) { for (const Down& d : downs) { if (!shown && SpikeOf(f, false, d.S.From) == s.DeathSpike) { shown = &d; } } }
 		if (!shown && c.MeRaw) { for (const Down& d : downs) { if (!shown && d.P == c.MeRaw) { shown = &d; } } }
 		if (!shown && !downs.empty()) { shown = &downs[0]; }
 		if (shown) { s.DeathKey = DownKey(f, *shown); }
-		s.DeathSpike = -1;
+		if (s.DeathFilter != 4) { s.DeathSpike = -1; }
 
-		float listW = 250;
-		List(c, downs, listW, s.DeathFilter == 3 ? std::string() : shown ? DownKey(f, *shown) : std::string());
-		ImGui::SameLine(0, 10);
+		if (aMode == DM_List)
+		{
+			Answer(std::to_string(f.SquadDowns) + (f.SquadDowns == 1 ? " down, " : " downs, ") + std::to_string(f.SquadDeaths) + " died");
+			List(c, downs, 0, std::string(), true);
+			return;
+		}
+		if (aMode == DM_Both)
+		{
+			float listW = 250;
+			List(c, downs, listW, s.DeathFilter == 3 ? std::string() : shown ? DownKey(f, *shown) : std::string());
+			ImGui::SameLine(0, 10);
+		}
 		ImGui::BeginChild("downdetail", ImVec2(0, 0), false);
-		if (s.DeathFilter == 3) { RevivesTable(c); ImGui::EndChild(); return; }
+		if (s.DeathFilter == 3 && aMode == DM_Both) { RevivesTable(c); ImGui::EndChild(); return; }
 		if (!shown) { ImGui::TextColored(kMuted, "No downs for this filter."); ImGui::Spacing(); RevivesTable(c); ImGui::EndChild(); return; }
+		if (aMode == DM_Detail)
+		{
+			// step through the downs it was opened from, in time order: one player's (the squad grid), yours, a spike's, a
+			// subgroup's, else every down of the round (the user, 2026-10-05: from a player, Earlier went to someone else's)
+			const bool scoped = s.DeathFilter != 0 && s.DeathFilter != 3 &&
+				std::any_of(downs.begin(), downs.end(), [&](const Down& d) { return DownKey(f, d) == s.DeathKey; });
+			const std::vector<Down>& steps = scoped ? downs : all;
+			int at = -1;
+			for (size_t i = 0; i < steps.size(); i++) { if (DownKey(f, steps[i]) == s.DeathKey) { at = static_cast<int>(i); } }
+			const int n = static_cast<int>(steps.size());
+			// "2 of 2 of Rod's downs", "1 of 5 downs in the enemy spike at 0:33", "14 of 15 downs"
+			std::string scope = "downs";
+			if (scoped)
+			{
+				switch (s.DeathFilter)
+				{
+				case 1: scope = "of your downs"; break;
+				case 2: scope = c.MeRaw ? "downs in sg " + std::to_string(c.MeRaw->Subgroup) : scope; break;
+				case 4: scope = "downs in the enemy spike at " + Duration(s.DeathSpike); break;
+				case 5: scope = "of " + shown->P->Name + "'s downs"; break;
+				default: break;
+				}
+			}
+			if (at > 0 && ImGui::SmallButton("< Earlier down")) { s.DeathKey = DownKey(f, steps[at - 1]); }
+			if (at > 0) { ImGui::SameLine(); }
+			if (at >= 0 && at + 1 < n && ImGui::SmallButton("Later down >")) { s.DeathKey = DownKey(f, steps[at + 1]); }
+			ImGui::SameLine(0, 12);
+			ImGui::TextColored(kMuted, "%d of %d %s", at + 1, n, scope.c_str());
+			if (scoped)
+			{
+				ImGui::SameLine(0, 12);
+				if (ImGui::SmallButton("Every down")) { s.DeathFilter = 0; s.DeathSpike = -1; }
+				if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Earlier and Later through every down of the round"); }
+			}
+		}
 		static std::string cachedKey;
 		static Detail cached;
 		std::string key = DownKey(f, *shown) + "|" + std::to_string(DataVersion());
@@ -964,7 +1092,7 @@ namespace Ui
 		}
 		ImGui::Spacing();
 		ImGui::Separator();
-		if (ImGui::SmallButton("Revive skills and the revive order >")) { s.DeathFilter = 3; }
+		if (ImGui::SmallButton("Revive skills and the revive order >")) { if (aMode == DM_Both) { s.DeathFilter = 3; } else { Go(P_Revives); } }
 		ImGui::EndChild();
 	}
 }

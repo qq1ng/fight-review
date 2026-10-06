@@ -366,7 +366,7 @@ namespace Ui
 		}
 		double healed = 0;
 		for (auto& [ms, a] : p.HealsIn) { if (ms >= from && ms <= t) { healed += a; } }
-		bool spike = SpikeOf(f.TheirSpikesMs, t) >= 0;
+		bool spike = SpikeOf(f, false, t) >= 0;
 		auto at = [](const Player& q, int32_t aMs) -> const Player::Point*
 		{
 			const Player::Point* best = nullptr;

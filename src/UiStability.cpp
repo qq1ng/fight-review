@@ -133,16 +133,20 @@ namespace Ui
 		{
 			ImVec2 pos = ImGui::GetCursorScreenPos();
 			dl->AddRectFilled(pos, ImVec2(pos.x + laneW, pos.y + h), kLaneBg);
-			for (int64_t t : f.TheirSpikesMs) { dl->AddRect(ImVec2(x(pos, t - 4000.0), pos.y + 1), ImVec2(x(pos, double(t)), pos.y + h - 1), kEnemy); }
-			for (int64_t t : f.TheirSpikesMs) { dl->AddRectFilled(ImVec2(x(pos, double(t)), pos.y + 1), ImVec2(x(pos, t + 3000.0), pos.y + h - 1), kEnemy); }
+			for (int64_t t : f.TheirSpikesMs)
+			{
+				auto [a, b] = SpikeWindow(f, false, t, 0, 3000);
+				dl->AddRect(ImVec2(x(pos, a - 4000.0), pos.y + 1), ImVec2(x(pos, double(a)), pos.y + h - 1), kEnemy);
+				dl->AddRectFilled(ImVec2(x(pos, double(a)), pos.y + 1), ImVec2(x(pos, double(b)), pos.y + h - 1), kEnemy);
+			}
 			ImGui::Dummy(ImVec2(laneW, h));
 		}
-		ImGui::TextColored(kMuted, "Our spikes");
+		ImGui::TextColored(kMuted, "Ally spikes");
 		ImGui::SameLine(labelW);
 		{
 			ImVec2 pos = ImGui::GetCursorScreenPos();
 			dl->AddRectFilled(pos, ImVec2(pos.x + laneW, pos.y + h), kLaneBg);
-			for (int64_t t : f.OurSpikesMs) { dl->AddRectFilled(ImVec2(x(pos, t - 2000.0), pos.y + 1), ImVec2(x(pos, t + 2000.0), pos.y + h - 1), kYou); }
+			for (int64_t t : f.OurSpikesMs) { auto [a, b] = SpikeWindow(f, true, t, 2000, 2000); dl->AddRectFilled(ImVec2(x(pos, double(a)), pos.y + 1), ImVec2(x(pos, double(b)), pos.y + h - 1), kYou); }
 			ImGui::Dummy(ImVec2(laneW, h));
 		}
 		// Stability given to the subgroup: one lane, a tick per cast or pulse that reached someone in it (taller when it

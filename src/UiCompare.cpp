@@ -40,7 +40,7 @@ namespace Ui
 				lines.push_back({"Down contribution", dc(a), dc(b), "estimated: damage from 90% to a down that died, and its share"});
 				double sa = SpikeShare(Lookup(c, a).first, Lookup(c, a).second, a.Spec), sb = SpikeShare(Lookup(c, b).first, Lookup(c, b).second, b.Spec);
 				auto pct = [](double v) { return v < 0 ? std::string("-") : std::to_string(int(v + 0.5)) + "%"; };
-				lines.push_back({"Damage in our spikes", pct(sa), pct(sb), "share of their damage within 2 s of our spike peaks"});
+				lines.push_back({"Damage in ally spikes", pct(sa), pct(sb), "share of the player's damage within 2 s of ally spike peaks"});
 			}
 			else if (aMetric == kMetricHeal || aMetric == kMetricBarrier)
 			{
@@ -325,7 +325,7 @@ namespace Ui
 			ImGui::SameLine(0, 20);
 			Key(kYou, c.LeftIsYou() ? "you" : a.Name.c_str());
 			Key(kPeerTick, b.Name.c_str());
-			Key(kOurBand, "our spike");
+			Key(kOurBand, "ally spike");
 			Key(kEnemyBand, "enemy spike");
 			ImGui::NewLine();
 			if (!late.empty()) { ImGui::PushTextWrapPos(0); ImGui::TextColored(kMuted, "%s", late.c_str()); ImGui::PopTextWrapPos(); }
@@ -349,8 +349,8 @@ namespace Ui
 			auto x = [&](double ms) { return g.x + static_cast<float>(std::clamp(ms / span, 0.0, 1.0)) * width; };
 			float mid = g.y + h * 0.5f;
 			dl->AddRectFilled(g, ImVec2(g.x + width, g.y + h), kLaneBg);
-			for (int64_t t : f.OurSpikesMs) { dl->AddRectFilled(ImVec2(x(t - 2000.0), g.y), ImVec2(x(t + 2000.0), g.y + h), kOurBand); }
-			for (int64_t t : f.TheirSpikesMs) { dl->AddRectFilled(ImVec2(x(double(t)), g.y), ImVec2(x(t + 3000.0), g.y + h), kEnemyBand); }
+			for (int64_t t : f.OurSpikesMs) { auto [s0, s1] = SpikeWindow(f, true, t, 2000, 2000); dl->AddRectFilled(ImVec2(x(double(s0)), g.y), ImVec2(x(double(s1)), g.y + h), kOurBand); }
+			for (int64_t t : f.TheirSpikesMs) { auto [s0, s1] = SpikeWindow(f, false, t, 0, 3000); dl->AddRectFilled(ImVec2(x(double(s0)), g.y), ImVec2(x(double(s1)), g.y + h), kEnemyBand); }
 			float bw = std::max(1.0f, width / std::max<size_t>(1, up.size()) * 0.72f);
 			for (size_t s = 0; s < up.size(); s++)
 			{
@@ -406,6 +406,8 @@ namespace Ui
 		ImGui::SameLine();
 		pick("##right", s.CompareRight, c.Vs ? c.Vs->Name + "  " + c.Vs->Spec : std::string("nobody"), c.Vs);
 		ImGui::SameLine(0, 20);
+		// the measure on a line of its own when the pane is narrow (the window's right side)
+		if (ImGui::GetContentRegionAvail().x < ImGui::CalcTextSize("in").x + ImGui::GetStyle().ItemSpacing.x + 220) { ImGui::NewLine(); }
 		ImGui::TextColored(kMuted, "in");
 		ImGui::SameLine();
 		ImGui::SetNextItemWidth(220);

@@ -82,12 +82,12 @@ namespace Ui
 					  return std::to_string(n) + " of " + std::to_string(all); }, S_Support});
 				v.push_back({"Damage", "To enemy players", [](const Fight&, const Player& p) { return double(p.Damage); }, num, S_Damage});
 				v.push_back({"Damage all", "To anything hostile", [](const Fight&, const Player& p) { return double(p.DamageAll); }, num, S_Damage});
-				v.push_back({"In spikes", "Their damage within 2 s of our spikes", [](const Fight& f, const Player& p)
+				v.push_back({"In spikes", "Damage within 2 s of ally spikes", [](const Fight& f, const Player& p)
 					{ double in = 0, all = 0;
 					  for (size_t s = 0; s < p.DamagePerS.size(); s++)
 					  {
 						  all += p.DamagePerS[s];
-						  for (int64_t t : f.OurSpikesMs) { if (std::llabs(static_cast<int64_t>(s) * 1000 + 500 - t) <= 2000) { in += p.DamagePerS[s]; break; } }
+						  if (InSpike(f, true, static_cast<int64_t>(s) * 1000 + 500, 2000, 2000)) { in += p.DamagePerS[s]; }
 					  }
 					  return all > 0 ? 100.0 * in / all : kUnknown; },
 					[](const Fight&, const Player&, double x) { return Pct(x); }, S_Damage});
@@ -123,16 +123,27 @@ namespace Ui
 			if (!ImGui::BeginTable("round", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) { return; }
 			const char* heads[] = {"", "Players", "Downed", "Killed", "Damage", "Spikes", "Pets took"};
 			for (const char* h : heads) { ImGui::TableSetupColumn(h, ImGuiTableColumnFlags_WidthFixed, h[0] ? 70.0f : 60.0f); }
-			Headers({{"", nullptr}, {"Players", nullptr}, {"Downed", "Of this side"}, {"Killed", "Of this side"}, {"Damage", "Dealt by this side"},
+			Headers({{"", nullptr}, {"Players", nullptr}, {"Downed", "Of this side"}, {"Killed", "Of this side"}, {"Damage", "To the other side's players"},
 				{"Spikes", "Damage peaks"}, {"Pets took", "Hits on pets and minions"}});
 			ImGui::TableNextRow();
-			ImGui::TableNextColumn(); Key(kYou, "Us");
+			ImGui::TableNextColumn(); Key(kYou, "Ally");
 			NumCell(std::to_string(f.SquadCount)); NumCell(std::to_string(f.SquadDowns)); NumCell(std::to_string(f.SquadDeaths));
 			NumCell(Num(double(f.SquadDamage))); NumCell(std::to_string(f.OurSpikesMs.size())); NumCell(Num(double(f.SquadPetsTook)));
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn(); Key(kEnemy, "Enemy");
 			NumCell(std::to_string(f.EnemyCount)); NumCell(std::to_string(f.EnemyDowns)); NumCell(std::to_string(f.EnemyDeaths));
 			NumCell(Num(double(f.EnemyDamage))); NumCell(std::to_string(f.TheirSpikesMs.size())); NumCell(Num(double(f.EnemyPetsTook)));
+			// two enemy teams at once: a row each (the user, 2026-10-05), players, downed and killed; the rest isn't split
+			std::vector<EnemyTeam> teams = EnemyTeams(f);
+			if (teams.size() >= 2)
+			{
+				for (const EnemyTeam& t : teams)
+				{
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn(); ImGui::TextColored(kMuted, "  %s", TeamName(t.Team));
+					NumCell(std::to_string(t.Players)); NumCell(std::to_string(t.Downed)); NumCell(std::to_string(t.Killed));
+				}
+			}
 			ImGui::EndTable();
 		}
 
@@ -159,7 +170,7 @@ namespace Ui
 			{
 				auto [m, n] = cover(worst);
 				Answer("Subgroup " + std::to_string(worst) + " held worst: stability covered " + Share(m, n) + " of its CC, and it had " +
-					std::to_string(downs(worst)) + " of our " + std::to_string(f.SquadDowns) + " downs.");
+					std::to_string(downs(worst)) + " of " + std::to_string(f.SquadDowns) + " ally downs.");
 			}
 			else { Answer("Too little CC this round to judge stability by subgroup."); }
 
@@ -324,8 +335,18 @@ namespace Ui
 				}
 				ImGui::TableNextColumn();
 				std::string name = p->Name + (p->Pov ? " (you)" : "");
-				if (ImGui::Selectable(name.c_str(), false) && !p->Pov) { S().VsAccount = p->Account; }
-				if (ImGui::IsItemHovered() && !p->Pov) { ImGui::SetTooltip("Compare yourself with %s", p->Name.c_str()); }
+				// a name opens Compare: you against them, or you against the best on your spec (the user, 2026-10-05: the way
+				// into Compare for anyone, downed or not)
+				if (ImGui::Selectable(name.c_str(), false))
+				{
+					State& st = S();
+					Go(P_Compare);
+					st.CompareLeft.clear();
+					st.CompareRight = p->Pov ? std::string() : p->Account;
+					st.Metric = -1;
+					st.CompareTonight = false;
+				}
+				if (ImGui::IsItemHovered()) { ImGui::SetTooltip(p->Pov ? "Click: compare yourself with the best on your spec" : "Click: compare yourself with %s", p->Name.c_str()); }
 				for (int i : cols)
 				{
 					double v = all[i].Value(f, *p);

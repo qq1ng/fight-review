@@ -98,6 +98,7 @@ namespace Analysis
 		int         Downs = 0, Deaths = 0;
 		int         CcTaken = 0;       // times crowd controlled
 		int         CcDealt = 0;       // crowd control landed on anything hostile (TopStats "appliedCrowdControl")
+		int         CcIntoStab = 0;    // their CC an enemy's stability blocked (a stack used up; a landed CC is in the log as a CC)
 		uint32_t    Legends = 0;       // Legend bits: Revenant legends used
 		int64_t     CcTakenMs = 0;     // total CC duration
 		int64_t     DamageTaken = 0;
@@ -178,6 +179,9 @@ namespace Analysis
 		std::array<double, kBoons> BoonGroupS{}; // seconds given to the own subgroup, self excluded
 		std::map<int32_t, SkillRow> Skills;      // 0 = no cast (traits, relics, sigils) for attributed values
 		std::vector<std::pair<int32_t, int>> OtherBoonMs; // (ms, boon) given to others with no skill found: for tools/frcheck
+		// A Warrior's Signet of Might by its effect: when they had Unblockable (its active, 10 stacks) and its ready buff
+		// (the passive, on while the signet is ready). A use before the round shows as Unblockable at its start.
+		std::vector<std::pair<int32_t, int32_t>> UnblockableOn, MightSignetReady;
 
 		double PerMin(double aValue) const { return ActiveMs > 0 ? aValue * 60000.0 / ActiveMs : 0.0; }
 		// EI squad generation as TopStats shows it: stacks (intensity) or % (queued), averaged over the others
@@ -197,10 +201,12 @@ namespace Analysis
 			std::vector<std::pair<int32_t, int32_t>> Hp; // (ms, health % x 100)
 			std::vector<Span> DownSpans;                 // downed (Dead false) and dead (Dead true), as for players
 			bool Fought = false;                         // hit us or took our hits: counted in EnemyCount (the enemy squad)
+			int Team = -1;                               // WvW team: 0 red, 1 blue, 2 green, -1 unknown
 		};
 		std::vector<Enemy>    Enemies;   // enemy players who hit us or had a position: spec, positions, health, downs
 		int                   SquadDowns = 0, SquadDeaths = 0, EnemyDowns = 0, EnemyDeaths = 0;
-		int64_t               SquadDamage = 0, EnemyDamage = 0; // damage dealt by each side (players and minions)
+		int64_t               SquadDamage = 0, EnemyDamage = 0; // damage each side (players and their minions) did to the other's players
+		int                   EnemyStabUsedUp = 0; // enemy stability stacks our CC used up: our CC their stability blocked
 		int64_t               SquadPetsTook = 0, EnemyPetsTook = 0; // damage each side's pets and minions took from the other
 		std::vector<Player>   Players;    // present squad members
 		int                   Pov = -1;   // index into Players
@@ -211,13 +217,21 @@ namespace Analysis
 		std::map<int, std::array<double, kBoons>> GroupUptime;
 		std::map<int, int> GroupSize;
 		std::map<int, int64_t> GroupDamageTaken; // damage the members of each subgroup took
-		std::vector<int64_t> OurSpikesMs, TheirSpikesMs;     // from fight start
+		std::vector<int64_t> OurSpikesMs, TheirSpikesMs;     // each spike's peak (its highest second's middle), from fight start
+		// each spike's run of seconds (start of its first, end of its last), in the order of the peaks
+		std::vector<std::pair<int32_t, int32_t>> OurSpikeSpans, TheirSpikeSpans;
 		std::vector<int32_t> OurStripsMs, OurCcMs;           // enemy boons we removed, CC we landed on enemy players
 		std::vector<int32_t> OurCleansesMs;                  // conditions we removed from allies
 		std::vector<int64_t> SupportPerS;                    // our healing and barrier per second (Healing Stats players only)
 		// Per second, who was invulnerable: a hit on them absorbed (distortion, Tale of the August Queen and the like).
 		// InvulnOurs: Players indexes; InvulnTheirs: Enemies indexes
 		std::vector<std::vector<int>> InvulnOurs, InvulnTheirs;
+		// Enemy strikes on allies that did nothing, in time order: Kind 0 absorbed by Distortion (Tale of the August Queen, a
+		// Mesmer's own), 1 blocked, 2 dodged or evaded, 3 missed (blind), 4 absorbed going down or just revived (Determined,
+		// Resurrection), 5 absorbed by other invulnerability. Player: Players index; Enemy: Enemies index (-1 an NPC or siege).
+		struct Negated { int32_t Ms = 0; int32_t Skill = 0; int Player = -1, Enemy = -1; uint8_t Kind = 0; };
+		std::vector<Negated> NegatedHits;
+		std::vector<std::pair<int32_t, int>> StrikesIn; // each enemy strike that landed on an ally: (ms, Players index), in time order
 		// Distortion put on one of ours (their own, or a Tale of the August Queen): when, how long, who gave it (Players index, -1 not
 		// one of ours) and who got it
 		struct InvulnGive { int32_t Ms = 0, Duration = 0; int By = -1, To = -1; int32_t Buff = 0; };
@@ -236,6 +250,10 @@ namespace Analysis
 		std::vector<Pulse> Pulses;
 		std::map<int32_t, std::string> SkillNames;
 		uint32_t MapId = 0;
+		// WvW teams: the round's team ids for red, blue and green (the log's WvW teams event), and the squad's colour
+		// (0 red, 1 blue, 2 green, -1 unknown). Each enemy's is Enemy::Team: two enemy teams in one fight are told apart.
+		std::array<uint32_t, 3> TeamIds{};
+		int SquadTeam = -1;
 		// Players are named by account in Edge of the Mists (968), where other worlds' players have no character name
 		// (a placeholder like "ag1458" or their WvW rank, "Mithril Champion"), and whenever a squad name looks like that
 		// elsewhere; by character name in normal WvW (the Rezz Order rule, 2026-09-24)
