@@ -139,7 +139,7 @@ namespace Session
 						const bool counted = store.Logs.count(stamp) > 0;
 						auto fight = std::make_shared<Analysis::Fight>(Analysis::Analyse(path, &store.Pool, counted));
 						// ArcDPS sometimes saves a second or so after a fight as a log of its own: no enemy players, one
-						// squad member at most. Not a round (2026-09-24: it showed as "the recorder isn't in the squad").
+						// squad member at most. Not a round (it showed as "the recorder isn't in the squad").
 						if (fight->EnemyCount == 0 || fight->SquadCount < 2 || fight->DurationMs < 1000)
 						{
 							SetStatus("Skipped " + PathText(path.filename()) + ": no fight in it");

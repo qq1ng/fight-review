@@ -31,7 +31,7 @@ KEYS = {
     "dodges": ("events", 10),
 }
 # Not compared: dmg_taken. TopStats stores it per second of active time (whole seconds), so it can't be turned
-# back into a total closely enough; ours came out about 1.5% lower with a wide spread (2026-09-24).
+# back into a total closely enough; ours came out about 1.5% lower with a wide spread.
 
 
 def log_for_fight(fight, folder):

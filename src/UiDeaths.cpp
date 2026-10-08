@@ -81,8 +81,8 @@ namespace Ui
 			std::string DodgeLine;
 			std::string BurstLabel;    // on the burst's box: "24.3k to health in 2.0 s"
 			int32_t BurstEnd = 0;      // its last hit (ms)
-			// How they went down, in a few steps (the user, 2026-09-30: what killed them, before the second by second):
-			// worn down, stability lost, CC, the burst, how it ended. Icon: a skill, else a CC type or a boon struck through.
+			// How they went down, in a few steps: worn down, stability lost, CC, the burst, how it ended. Icon: a skill, else
+			// a CC type or a boon struck through.
 			struct Step { int32_t Ms = 0; int32_t Skill = 0; int Cc = -1; int Boon = -1; ImU32 Frame = 0; std::string Value, Word, Extra; };
 			std::vector<Step> Steps;
 			// The enemy skills of the 6 s before the down, most damage first
@@ -217,7 +217,7 @@ namespace Ui
 				if (sum > best) { best = sum; bestBarrier = shield; bestAt = a.Ms; }
 			}
 			// The burst from where it really starts: the last hit from which 90% of it is still to come (the window began at
-			// its first small hit: "23.1k in 1.99 s" when nearly all of it came in the last 0.2 s; the user, 2026-09-30)
+			// its first small hit: "23.1k in 1.99 s" when nearly all of it came in the last 0.2 s)
 			int32_t burstEnd = bestAt;
 			if (best > 0)
 			{
@@ -273,8 +273,8 @@ namespace Ui
 					e.Text = q.Name + " revived them for " + Num((std::min(v.To, d.S.To) - e.Ms) / 1000.0) + " s.";
 					out.Events.push_back(e);
 				}
-				// every revive skill near them while they were down, also the ones that didn't get them up (the user,
-				// 2026-10-01); a Spirit of Nature revives about 0.9 s after its cast, so one just before the down counts
+				// every revive skill near them while they were down, also the ones that didn't get them up; a Spirit of
+				// Nature revives about 0.9 s after its cast, so one just before the down counts
 				for (const auto& u : q.ReviveUses)
 				{
 					const int32_t lag = u.Skill == 12569 ? 1500 : 0;
@@ -319,7 +319,7 @@ namespace Ui
 				Event e;
 				e.Ms = t; e.Rail = 2; e.What = Event::E_Down;
 				int32_t ms = d.S.To - d.S.From;
-				// how they got up: revived by whom, a rally, or unknown (the user, 2026-10-01: "it just says they got up")
+				// how they got up: revived by whom, a rally, or unknown
 				e.Text = std::string("Down. ") + (d.Died ? "Died after " + Num(ms / 1000.0) + " s." : (ms < 500 ? "Got up at once: " : "Got up after " + Num(ms / 1000.0) + " s: ") + GotUpHow(f, d) + ".");
 				out.Events.push_back(e);
 			}
@@ -566,7 +566,7 @@ namespace Ui
 
 		// Which lane an event sits in: 0 CC, 1 boons lost, 2 stability; -1: on the health line (heals, revives, the down,
 		// up again, Illusion of Life), -2: the burst (a box on the graph), -3: dodges (small, along the graph's top edge:
-		// the user, 2026-09-25, a lane of their own wasn't needed)
+		// a lane of their own wasn't needed)
 		int LaneOf(const Event& e)
 		{
 			switch (e.What)
@@ -586,9 +586,9 @@ namespace Ui
 			for (float y = aTop; y < aBottom; y += 7) { dl->AddLine(ImVec2(aX, y), ImVec2(aX, std::min(y + 4, aBottom)), aColor, 1.0f); }
 		}
 
-		// The clock (the user's v5, 2026-09-25): a lane per kind above the graph (CC, boons lost, stability, dodges), so
-		// nothing hides another kind; events at one moment sit side by side from its tick, and what doesn't fit before
-		// the next moment becomes "+n" after them. Heals and revives sit on the health line; the burst is a dashed box.
+		// The clock: a lane per kind above the graph (CC, boons lost, stability, dodges), so nothing hides another kind;
+		// events at one moment sit side by side from its tick, and what doesn't fit before the next moment becomes "+n"
+		// after them. Heals and revives sit on the health line; the burst is a dashed box.
 		void DownClock(const Fight& f, const Down& d, const Detail& det)
 		{
 			const Player& p = *d.P;
@@ -673,8 +673,8 @@ namespace Ui
 			};
 			{
 				// ArcDPS writes health only now and then, so the last value before a down is often still high: the line drops
-				// to 0 at the down. While downed the game shows the downed bar (its own health pool, 75% when the user asked):
-				// drawn thin and grey so it doesn't read as health left (the user, 2026-09-30).
+				// to 0 at the down. While downed the game shows the downed bar (its own health pool, 75% when checked): drawn
+				// thin and grey so it doesn't read as health left.
 				int32_t last = -1;
 				for (auto& [ms, hp] : p.Hp) { if (ms <= from) { last = hp; } }
 				ImVec2 prev(x(from), last >= 0 ? hpY(last) : -1);
@@ -771,9 +771,8 @@ namespace Ui
 					EventIcon(dl, ImVec2(cx, cy), isz, f, e);
 				}
 			}
-			// the down, and the time axis
-			// the down: a bright line on a dark edge, so it stays visible over bars and shading (the user, 2026-09-26: it
-			// got lost)
+			// the down, and the time axis the down: a bright line on a dark edge, so it stays visible over bars and
+			// shading
 			dl->AddLine(ImVec2(x(t), g.y), ImVec2(x(t), mainY + mainH), IM_COL32(0x10, 0x11, 0x14, 255), 5.0f);
 			dl->AddLine(ImVec2(x(t), g.y), ImVec2(x(t), mainY + mainH), ink, 2.0f);
 			float lastLabel = -1e9f;
@@ -804,7 +803,7 @@ namespace Ui
 					std::string shield = h->Barrier > 0 ? " (" + Num(h->Barrier) + " into barrier)" : std::string();
 					ImGui::Text("%s%s %s%s", Num(h->Damage).c_str(), shield.c_str(), SkillName(f, h->Skill).c_str(), h->Enemy >= 0 ? (" (" + f.Enemies[h->Enemy].Spec + ")").c_str() : "");
 				}
-				// each event with its icon, as on the clock (the user, 2026-10-01: the boons lost and heals were text only)
+				// each event with its icon, as on the clock
 				for (const Event& e : det.Events)
 				{
 					if (std::abs(e.Ms - at) > 250 || e.What == Event::E_Burst) { continue; }
@@ -868,7 +867,7 @@ namespace Ui
 				std::string sg = "Sg " + std::to_string(c.MeRaw->Subgroup);
 				if (seg(sg.c_str(), s.DeathFilter == 2)) { s.DeathFilter = 2; s.DeathKey.clear(); }
 			}
-			// the revive skills and the revive order get the right side (the user, 2026-09-26: at the bottom they were hidden)
+			// the revive skills and the revive order get the right side
 			ImGui::SameLine(0, 8);
 			if (seg("Revives", s.DeathFilter == 3)) { if (aWide) { Go(P_Revives); } else { s.DeathFilter = 3; } }
 			// one enemy spike's downs (opened from its "Allied downs"), or one player's (the squad grid): a chip that clears it
@@ -888,9 +887,16 @@ namespace Ui
 				if (seg(chip.c_str(), true)) { s.DeathFilter = 0; }
 				if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Only this player's downs; click: every down"); }
 			}
+			// the downs the why view counted for one cause
+			if (s.DeathFilter == 6)
+			{
+				ImGui::SameLine(0, 8);
+				std::string chip = std::string(StruggleCauseLabel(s.DeathCause)) + "  x";
+				if (seg(chip.c_str(), true)) { s.DeathFilter = 0; s.DeathCause = -1; }
+				if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Only the downs with this; click: every down"); }
+			}
 			ImGui::PopStyleVar();
-			// groups in time order: each enemy spike's downs, and the downs between spikes (the user, 2026-09-25: a down
-			// outside a spike belongs where it happened, not at the bottom). Key -1: outside a spike.
+			// groups in time order: each enemy spike's downs, and the downs between spikes. Key -1: outside a spike.
 			std::vector<std::pair<int64_t, std::vector<const Down*>>> groups;
 			for (const Down& d : aDowns)
 			{
@@ -930,8 +936,7 @@ namespace Ui
 						const float cEnd = cWhy + std::max(lh * 10, (p.x + ImGui::GetContentRegionAvail().x - cWhy) * 0.56f);
 						dl->AddText(ImVec2(cSg, p.y), ImGui::GetColorU32(kMuted), ("sg " + std::to_string(d->P->Subgroup)).c_str());
 						DeathCause cause = CauseOf(f, *d->P, d->S);
-						// how they went down as icons (the user, 2026-10-05: a series of actions as icons, not words); each
-						// down's steps worked out once per round
+						// how they went down as icons; each down's steps worked out once per round
 						static std::string chainsKey;
 						static std::map<std::string, std::vector<ChainStep>> chains;
 						if (std::string ck = f.Stamp + "|" + std::to_string(DataVersion()); ck != chainsKey) { chainsKey = ck; chains.clear(); }
@@ -986,6 +991,7 @@ namespace Ui
 			if (s.DeathFilter == 2 && (!c.MeRaw || d.P->Subgroup != c.MeRaw->Subgroup)) { continue; }
 			if (s.DeathFilter == 4 && SpikeOf(f, false, d.S.From) != s.DeathSpike) { continue; }
 			if (s.DeathFilter == 5 && d.P->Account != s.DeathPlayer) { continue; }
+			if (s.DeathFilter == 6 && !StruggleDownHas(c, *d.P, d.S.From, s.DeathCause)) { continue; }
 			downs.push_back(d);
 		}
 		if (all.empty())
@@ -1023,7 +1029,7 @@ namespace Ui
 		if (aMode == DM_Detail)
 		{
 			// step through the downs it was opened from, in time order: one player's (the squad grid), yours, a spike's, a
-			// subgroup's, else every down of the round (the user, 2026-10-05: from a player, Earlier went to someone else's)
+			// subgroup's, else every down of the round
 			const bool scoped = s.DeathFilter != 0 && s.DeathFilter != 3 &&
 				std::any_of(downs.begin(), downs.end(), [&](const Down& d) { return DownKey(f, d) == s.DeathKey; });
 			const std::vector<Down>& steps = scoped ? downs : all;
@@ -1040,6 +1046,7 @@ namespace Ui
 				case 2: scope = c.MeRaw ? "downs in sg " + std::to_string(c.MeRaw->Subgroup) : scope; break;
 				case 4: scope = "downs in the enemy spike at " + Duration(s.DeathSpike); break;
 				case 5: scope = "of " + shown->P->Name + "'s downs"; break;
+				case 6: scope = "downs: " + std::string(StruggleCauseLabel(s.DeathCause)); break;
 				default: break;
 				}
 			}
@@ -1064,7 +1071,7 @@ namespace Ui
 		Answer(det.Verdict);
 		ImGui::SetWindowFontScale(1.0f);
 		ImGui::Spacing();
-		// first how they went down and what hit them, then the clock and every event (the user's v7 pick, proposal A)
+		// first how they went down and what hit them, then the clock and every event
 		ImGui::TextColored(kMuted, "How they went down");
 		Steps(f, det);
 		ImGui::Spacing();

@@ -1,6 +1,6 @@
 """You against the best other player on your spec, skill by skill, over a set of fights. Standard library only.
 
-This is how the user reads TopStats: find who on the same spec did best, then look at which of their skills
+This is how TopStats is read: find who on the same spec did best, then look at which of their skills
 produced the most, whether they cast them more often or got more out of each cast, and when they cast them.
 
 What "best" means depends on the role (--by):

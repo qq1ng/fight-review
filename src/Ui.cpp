@@ -28,12 +28,12 @@ namespace Ui
 
 	namespace
 	{
-		// The summary window's style (right-click > Style), saved in settings.txt. Width 0: 250 px (the user, 2026-10-04:
-		// ArcDPS' windows are about 250 x 250); height 0: as tall as its lines.
+		// The summary window's style (right-click > Style), saved in settings.txt. Width 0: 250 px; height 0: as tall as
+		// its lines.
 		struct MiniStyle { bool Title = true, Background = true; float Alpha = 1.0f, Width = 0, Height = 0; };
 		MiniStyle s_Mini;
 		unsigned s_MiniLines = (1u << ML_Count) - 1; // right-click > Lines: a bit per MiniLine, all on at first
-		bool s_MiniStrip = true;                     // right-click > Lines: the round's strip (the user, 2026-10-05: not sure it's needed)
+		bool s_MiniStrip = true;                     // right-click > Lines: the round's strip
 		constexpr float kMiniWidth = 250;
 		bool s_MiniDirty = false; // changed in the menu, saved when the drag ends
 		bool s_Gameplay = true, s_MapOpen = false;
@@ -384,9 +384,9 @@ namespace Ui
 		void RenderAll();
 	}
 
-	// Drawing timed: the options page shows what the addon costs per frame (the user, 2026-09-25: low frames in a big fight)
-	// An exception while drawing would leave our windows open (Begin without End) in Nexus' frame, which ImGui doesn't
-	// check in a release build: close what we opened, then let it go on to be logged
+	// Drawing timed: the options page shows what the addon costs per frame. An exception while drawing would leave our
+	// windows open (Begin without End) in Nexus' frame, which ImGui doesn't check in a release build: close what we opened,
+	// then let it go on to be logged
 	void Render()
 	{
 		auto t0 = std::chrono::steady_clock::now();
@@ -460,13 +460,14 @@ namespace Ui
 			case P_Downs: return "Ally downs this round";
 			case P_Revives: return "Revives and your revive order";
 			case P_Round:
-				if (s.SpikeOpen >= 0 && s.SpikeStamp == c.F->Stamp) { return std::string(s.SpikeEnemy ? "Enemy spike at " : "Ally spike at ") + Duration(s.SpikeOpen); }
+				if (s.SpikeOpen >= 0 && s.SpikeStamp == c.F->Stamp) { return std::string(s.SpikeEnemy ? "Enemy spike " : "Ally spike ") + SpikeWhen(*c.F, !s.SpikeEnemy, s.SpikeOpen); }
 				return s.RoundView == 1 ? "The round: stability over time" : "The round: both sides' damage, skills marked";
 			case P_You: return "You against your spec, this round";
 			case P_Night: return "Your night: what keeps coming back";
 			case P_Compare: return "Compare two players";
 			case P_Squad: return "Every player this round";
 			case P_Calls: return "The calls: who and when";
+			case P_Struggle: return S().StruggleNight ? "Tonight: why rounds were lost and won" : "Why this round was lost or won";
 			case P_Help: return "How to read the left side";
 			default: return "";
 			}
@@ -485,6 +486,7 @@ namespace Ui
 			s.DeathFilter = b.DeathFilter;
 			s.RoundView = b.RoundView;
 			s.DeathPlayer = b.DeathPlayer;
+			s.DeathCause = b.DeathCause;
 		}
 
 		// The right side: the pane picked in the debrief (or a link in another pane), under a line with Back
@@ -542,9 +544,10 @@ namespace Ui
 				if (s.CompareLeft.empty() && s.CompareRight.empty()) { CompareTab(CachedCtx(aSnap.Fights, aIndex, s.CompareTonight, ForcedYou)); }
 				else { CompareTab(CachedCtx(aSnap.Fights, aIndex, s.CompareTonight, s.CompareLeft, s.CompareRight)); }
 				break;
-			// one round only: its tables are the round's players (the Tonight switch did nothing; the user, 2026-09-30)
+			// one round only: its tables are the round's players (the Tonight switch did nothing)
 			case P_Squad: SquadTab(c); break;
 			case P_Calls: CallsView(c); break;
+			case P_Struggle: StruggleView(c); break;
 			case P_Help: HelpView(); break;
 			default: RoundTab(c); break;
 			}
@@ -614,7 +617,7 @@ namespace Ui
 		if (ForcedPane >= 0) { s.Shown = ForcedPane; }
 		else if (ForcedTab >= 0) { s.Shown = PaneOf(ForcedTab); }
 
-		// the debrief at the left (as wide as the v10 design's 412 px at the user's font), the pane at the right
+		// the debrief at the left (as wide as the v10 design's 412 px at the font), the pane at the right
 		const float lh = ImGui::GetTextLineHeight();
 		const float avail = ImGui::GetContentRegionAvail().x;
 		const float left = std::floor(std::min(lh * 31.0f, avail * 0.45f));

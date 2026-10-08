@@ -35,6 +35,39 @@ namespace Ui
 
 	}
 
+	// The stability score: TopStats' "Stability Performance" score (WvW Insights' guide: 0.25 amount + 0.30 ready + 0.30
+	// coverage, over 0.85; without ready, 0.25 amount + 0.30 coverage over 0.55; 3+ CC windows on the subgroup needed),
+	// where amount is stability given per minute alive against the round's most. Beside it, what the month of logs says
+	// matters most: the giver's subgroup with stability when enemy spikes hit.
+	struct StabScore { double Score = -1, Amount = 0, AmountMax = 0, AmountPts = 0, Ready = -1, Coverage = -1, AtSpikes = -1, Redundancy = -1; };
+	StabScore ScoreOf(const Fight& f, const Player& p, double aAmountMax)
+	{
+		StabScore s;
+		s.Amount = p.ActiveMs > 0 ? p.StabAllyMs / 1000.0 / (p.ActiveMs / 60000.0) : 0;
+		s.AmountMax = aAmountMax;
+		s.AmountPts = aAmountMax > 0 ? 100 * s.Amount / aAmountMax : 0;
+		if (p.StabCovered > 0) { s.Ready = 100.0 * p.StabReady / p.StabCovered; }
+		if (p.StabEligible >= 3) { s.Coverage = 100.0 * p.StabCovered / p.StabEligible; }
+		if (s.Coverage >= 0) { s.Score = s.Ready >= 0 ? (0.25 * s.AmountPts + 0.30 * s.Ready + 0.30 * s.Coverage) / 0.85 : (0.25 * s.AmountPts + 0.30 * s.Coverage) / 0.55; }
+		if (p.StabAllyNominalMs > 0) { s.Redundancy = 100.0 * p.StabRedundantMs / p.StabAllyNominalMs; }
+		// the subgroup at enemy spikes: members hit in it, up at its peak, with stability (anyone's) then
+		int hit = 0, with = 0;
+		for (int64_t t : f.TheirSpikesMs)
+		{
+			auto [a, b] = SpikeWindow(f, false, t, 1500, 1500);
+			for (const Player& m : f.Players)
+			{
+				if (m.Subgroup != p.Subgroup) { continue; }
+				if (!std::any_of(m.HitsIn.begin(), m.HitsIn.end(), [&](const auto& h) { return h.Ms >= a && h.Ms <= b; })) { continue; }
+				if (std::any_of(m.DownSpans.begin(), m.DownSpans.end(), [&](const auto& d) { return d.From <= t && d.To >= t; })) { continue; }
+				hit++;
+				with += std::any_of(m.BoonOn[Analysis::kStability].begin(), m.BoonOn[Analysis::kStability].end(), [&](const auto& s2) { return s2.first <= t && s2.second >= t; });
+			}
+		}
+		if (hit) { s.AtSpikes = 100.0 * with / hit; }
+		return s;
+	}
+
 	void StabilityGivers(const Ctx& c)
 	{
 		const Fight& f = *c.F;
@@ -43,34 +76,40 @@ namespace Ui
 		std::sort(givers.begin(), givers.end(), [&](const Player* a, const Player* b)
 			{ return a->Subgroup != b->Subgroup ? a->Subgroup < b->Subgroup : f.GroupGeneration(*a, Analysis::kStability) > f.GroupGeneration(*b, Analysis::kStability); });
 		if (givers.empty()) { ImGui::TextColored(kMuted, "Nobody gave stability to others this round."); return; }
+		double amountMax = 0;
+		for (const Player* p : givers) { if (p->ActiveMs > 0) { amountMax = std::max(amountMax, p->StabAllyMs / 1000.0 / (p->ActiveMs / 60000.0)); } }
 		ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Resizable;
-		if (!ImGui::BeginTable("stabgivers", 7, flags)) { return; }
-		const char* heads[] = {"Sg", "Giver", "CC covered", "On subgroup", "Lost to enemy", "Casts ahead of spike", "Main skills"};
-		float widths[] = {30, 170, 110, 90, 95, 140, 285};
-		for (int i = 0; i < 7; i++) { ImGui::TableSetupColumn(heads[i], ImGuiTableColumnFlags_WidthFixed, widths[i]); }
-		Headers({{"Sg", "Subgroup"}, {"Giver", nullptr}, {"CC covered", "Subgroup CC hitting their stability"},
-			{"On subgroup", "Average stacks they kept on it"}, {"Lost to enemy", "Their stacks stripped or used up"},
-			{"Casts ahead of spike", "In the 4 s before"}, {"Main skills", "Most of their stability came from"}});
+		if (!ImGui::BeginTable("stabgivers", 8, flags)) { return; }
+		const char* heads[] = {"Sg", "Giver", "Score", "CC covered", "Ready", "At enemy spikes", "Redundancy", "Main skills"};
+		float widths[] = {28, 150, 50, 115, 50, 110, 85, 0};
+		for (int i = 0; i < 8; i++) { ImGui::TableSetupColumn(heads[i], i == 7 ? ImGuiTableColumnFlags_WidthStretch : ImGuiTableColumnFlags_WidthFixed, widths[i]); }
+		Headers({{"Sg", "Subgroup"}, {"Giver", nullptr}, {"Score", "Amount, ready and coverage"}, {"CC covered", "Subgroup CC hitting their stability"},
+			{"Ready", "Covered with 3+ s left"}, {"At enemy spikes", "Their subgroup with stability"}, {"Redundancy", "On another giver's stacks"},
+			{"Main skills", "Most of their stability came from"}});
+		auto pct = [](double v) { return v < 0 ? std::string("-") : std::to_string(static_cast<int>(v + 0.5)) + "%"; };
 		for (const Player* p : givers)
 		{
+			const StabScore sc = ScoreOf(f, *p, amountMax);
 			ImGui::TableNextRow();
 			NumCell(std::to_string(p->Subgroup));
 			ImGui::TableNextColumn();
 			SpecIcon(*p);
 			ImGui::TextUnformatted((p->Name + (p->Pov ? " (you)" : "")).c_str());
-			NumCell(Share(p->StabCovered, p->StabEligible, 3));
-			NumCell(Num(f.GroupGeneration(*p, Analysis::kStability)));
-			NumCell(std::to_string(p->StabGivenLost));
-			auto skills = StabSkills(*p);
-			int casts = 0, ahead = 0;
-			std::string main;
-			for (size_t i = 0; i < skills.size(); i++)
+			NumCell(sc.Score < 0 ? std::string("-") : std::to_string(static_cast<int>(sc.Score + 0.5)));
+			if (ImGui::IsItemHovered())
 			{
-				const SkillRow& r = p->Skills.at(skills[i].first);
-				casts += r.Casts; ahead += r.Timing[Analysis::T_AheadOfTheirs];
-				if (i < 3 && skills[i].first != 0) { main += (main.empty() ? "" : ", ") + c.Name(skills[i].first); }
+				TipWrapped(sc.Score < 0 ? std::string("Under 3 CC windows on their subgroup: too few to score.")
+					: "Score " + std::to_string(static_cast<int>(sc.Score + 0.5)) + " (TopStats' stability score): amount " + std::to_string(static_cast<int>(sc.AmountPts + 0.5)) +
+					" (" + Num(sc.Amount) + " stack-seconds a minute; the round's most " + Num(sc.AmountMax) + "), ready " + pct(sc.Ready) + ", CC covered " + pct(sc.Coverage) +
+					". Redundancy isn't part of it.");
 			}
-			NumCell(casts ? std::to_string(ahead) + " of " + std::to_string(casts) : "-");
+			NumCell(Share(p->StabCovered, p->StabEligible, 3));
+			NumCell(pct(sc.Ready));
+			NumCell(pct(sc.AtSpikes));
+			NumCell(pct(sc.Redundancy));
+			auto skills = StabSkills(*p);
+			std::string main;
+			for (size_t i = 0; i < skills.size() && i < 3; i++) { if (skills[i].first != 0) { main += (main.empty() ? "" : ", ") + c.Name(skills[i].first); } }
 			Cell(main.empty() ? "other sources" : main);
 		}
 		ImGui::EndTable();
@@ -150,8 +189,7 @@ namespace Ui
 			ImGui::Dummy(ImVec2(laneW, h));
 		}
 		// Stability given to the subgroup: one lane, a tick per cast or pulse that reached someone in it (taller when it
-		// reached more of them); who gave it, with which skill and whom it reached or missed, on hover (the user,
-		// 2026-09-24: a lane per giver was too much)
+		// reached more of them); who gave it, with which skill and whom it reached or missed, on hover
 		{
 			std::vector<int> inGroup;
 			for (const Player* p : members[group]) { inGroup.push_back(static_cast<int>(p - f.Players.data())); }

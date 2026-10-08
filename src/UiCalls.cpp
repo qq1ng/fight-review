@@ -1,8 +1,8 @@
 // This round's calls (the Summary): how the squad's key skills were used, each judged by its own rule. Which skills,
-// and the rules, come from a month of logs and the user (notes/KEY_SKILLS.md, 2026-10-03): wells together; Warrior,
-// Chronomancer and Elementalist burst with the wells; Winds of Disenchantment one or two per spike; Spinal Shivers
-// together at the opening on one target; Battle Standard on a down; Tale of the August Queen, stability and heals
-// before their spikes; revives after downs; Crescendo and Continuum Split with a spike, either side's.
+// and the rules, come from a month of logs (notes/KEY_SKILLS.md): wells together; Warrior, Chronomancer and
+// Elementalist burst with the wells; Winds of Disenchantment one or two per spike; Spinal Shivers together at the
+// opening on one target; Battle Standard on a down; Tale of the August Queen, stability and heals before their spikes;
+// revives after downs; Crescendo and Continuum Split with a spike, either side's.
 #include "UiCommon.h"
 
 #include <algorithm>
@@ -36,9 +36,9 @@ namespace Ui
 			return out;
 		}
 
-		// a burst of instant skills, which the log has no cast for (a Chronomancer's shatters: the user, 2026-10-06, the
-		// card said 0 of 1 while their damage lined up with the wells), by its hits on players: each run of the skills'
-		// hits (gaps under 2 s) at its first hit, in time order
+		// a burst of instant skills, which the log has no cast for (a Chronomancer's shatters: the card said 0 of 1
+		// while their damage lined up with the wells), by its hits on players: each run of the skills' hits (gaps under
+		// 2 s) at its first hit, in time order
 		std::vector<Use> HitsNamed(const Fight& f, const std::vector<const char*>& aNames, uint32_t aProf)
 		{
 			std::vector<Use> out;
@@ -143,8 +143,7 @@ namespace Ui
 			}), wells.end());
 			// a call: wells within 3 s of its first (chained gaps merged waves into 12 s) from two Necromancers or more (one,
 			// when only one cast wells). A lone late or early well belongs to the call it was meant for, 5 s before its first
-			// cast to 15 s after, as off time; it isn't a call of its own (the user, 2026-10-06: three "calls" in 10 s were one
-			// call and two stragglers, and the Chronomancers' bursts were timed against the stragglers)
+			// cast to 15 s after, as off time; it isn't a call of its own
 			struct WellCall { std::vector<Use> Casts; int64_t At = 0, From = 0, To = 0; bool Lone = false; };
 			std::vector<WellCall> wellCalls;
 			{
@@ -198,8 +197,7 @@ namespace Ui
 				c.Key = "wells"; c.Group = 0; c.Name = "Wells"; c.Should = "together"; c.Skill = wells[0].Skill;
 				int together = 0, downs = 0, strips = 0, leftOut = 0;
 				// a grid: a column per Necromancer who cast a well this round (by subgroup, then name), and per call their
-				// two wells side by side: cast on time, cast off time, left out, or down at the time (the user, 2026-10-05:
-				// both wells belong together, and who left one out couldn't be seen)
+				// two wells side by side: cast on time, cast off time, left out, or down at the time
 				std::vector<const Player*> necros;
 				for (const Use& u : wells) { if (std::find(necros.begin(), necros.end(), u.By) == necros.end()) { necros.push_back(u.By); } }
 				std::sort(necros.begin(), necros.end(), [](const Player* a, const Player* b) { return a->Subgroup != b->Subgroup ? a->Subgroup < b->Subgroup : a->Name < b->Name; });
@@ -207,8 +205,7 @@ namespace Ui
 				const char* const kWells[] = {"Well of Corruption", "Well of Suffering"};
 				for (size_t k = 0; k < calls.size(); k++)
 				{
-					// a row per call, every well of it on one strip around the call's middle cast; together: within 1 s of it (the
-					// user, 2026-10-05: as text alone it couldn't be read at a glance)
+					// a row per call, every well of it on one strip around the call's middle cast; together: within 1 s of it
 					CallRow r;
 					int in = 0, callDowns = 0;
 					for (const Use& u : calls[k])
@@ -270,10 +267,7 @@ namespace Ui
 				c.Line += " \xc2\xb7 " + std::to_string(downs) + (downs == 1 ? " enemy down" : " enemy downs") + " within 5 s";
 				if (leftOut) { c.Line += " \xc2\xb7 " + std::to_string(leftOut) + (leftOut == 1 ? " well left out" : " wells left out"); }
 				Rate(c, double(together) / wells.size(), "together", "partly", "split");
-				c.Detail = "A call: the wells of two Necromancers or more within 3 s of its first; a lone well up to 15 s later counts with it, off time, and one with no "
-					"call near is shown alone. A cancelled cast (no pulse after it) doesn't count. The strip: each well against the call's middle cast; together: within 1 s of it, the shaded part. "
-					"Then each Necromancer's two wells: lit, cast together; a gold frame, cast but off time; struck through in red, left out; in grey, they were down. "
-					"The triangle: enemies downed in the 5 s after the call.";
+				c.Detail = "Together: within 1 s of the call's middle well.\nGold: off time; struck red: left out; grey: down.";
 				out.push_back(c);
 			}
 			// burst into the wells (or into our spikes, with no wells)
@@ -288,6 +282,37 @@ namespace Ui
 				c.Key = aKey; c.Group = 0; c.Name = aName; c.Should = std::string("with ") + refWord; c.Skill = casts[0].Skill;
 				int near = 0, on = 0, late = 0;
 				std::vector<std::string> lateNames;
+				// the burst's own skills around a call, as icons: each of the card's skills this player used from 3 s before
+				// to 4 s after it, lit on the call, in a gold frame off it
+				auto chainOf = [&](const Player* aBy, int64_t aRef)
+				{
+					std::vector<ChainStep> chain;
+					for (const char* name : aSkills)
+					{
+						int32_t at = INT32_MIN, id = 0;
+						if (aByHits)
+						{
+							for (const auto& h : aBy->HitsOut) { if (h.Ms >= aRef - 3000 && h.Ms <= aRef + 4000 && Name(f, h.Skill) == name) { at = h.Ms; id = h.Skill; break; } }
+						}
+						else
+						{
+							for (auto& [sk, row] : aBy->Skills)
+							{
+								if (sk <= 0 || Name(f, sk) != name) { continue; }
+								for (int32_t ms : row.CastMs) { if (ms >= aRef - 3000 && ms <= aRef + 4000 && (at == INT32_MIN || ms < at)) { at = ms; id = sk; } }
+							}
+						}
+						if (at == INT32_MIN) { continue; }
+						ChainStep st;
+						st.Name = name;
+						st.Skill = id;
+						const int32_t off = static_cast<int32_t>(at - aRef);
+						st.State = off >= -kBefore && off <= after ? CS_Done : CS_OffTime;
+						st.Tip = std::string(name) + (aByHits ? ": first hit " : ": cast ") + Offset(off) + " from " + refWord;
+						chain.push_back(st);
+					}
+					return chain;
+				};
 				// per player and call, the cast nearest the call's on-time window (the middle of -1 to +2.5 s)
 				std::map<std::pair<const Player*, int64_t>, std::pair<const Use*, int32_t>> best;
 				for (const Use& u : casts)
@@ -312,6 +337,23 @@ namespace Ui
 					r.WinTo = after;
 					r.By = u.By;
 					r.At = static_cast<int32_t>(key.second);
+					r.Chain = chainOf(u.By, key.second);
+					c.Rows.push_back(r);
+				}
+				// casts with no call within 5 s: listed under their own heading, with the nearest call if any
+				for (const Use& u : casts)
+				{
+					auto [ref, off] = Nearest(ourRefs, u.Ms);
+					if (ref >= 0 && std::abs(off) <= 5000) { continue; }
+					CallRow r{u.By->Name, Name(f, u.Skill), u.Ms, "", ref >= 0 ? "nearest call " + Duration(ref) + ", " + Offset(off) : std::string("no call this round"), false, 0};
+					r.Section = "Away from the calls";
+					r.By = u.By;
+					ChainStep st;
+					st.Name = Name(f, u.Skill);
+					st.Skill = u.Skill;
+					st.State = CS_OffTime;
+					st.Tip = st.Name + (aByHits ? ": first hit at " : ": cast at ") + Duration(u.Ms) + ", no call within 5 s";
+					r.Chain = {st};
 					c.Rows.push_back(r);
 				}
 				std::sort(c.Rows.begin(), c.Rows.end(), [](const CallRow& a, const CallRow& b) { return a.Ms - a.Offset != b.Ms - b.Offset ? a.Ms - a.Offset < b.Ms - b.Offset : a.Ms < b.Ms; });
@@ -325,14 +367,12 @@ namespace Ui
 					if (!lateNames.empty()) { c.Line += " \xc2\xb7 late: " + Names(lateNames); }
 					Rate(c, double(on) / near, "on the call", "partly", late * 2 >= near - on ? "late" : "early");
 				}
-				c.Detail = aByHits ? std::string("For each call (") + refWord + "), each player's best-timed burst within 5 s of it, by its first hit: the log has no cast for "
-					"instant skills like shatters. On the call: the first hit from 1 s before to 3 s after."
-					: std::string("For each call (") + refWord + "), each player's best-timed cast within 5 s of it; on the call: 1 s before to 2.5 s after (the wells pulse after their cast)";
+				c.Detail = std::string("On the call: ") + (aByHits ? "first hit 1 s before to 3 s after " : "1 s before to 2.5 s after ") + refWord + ".\nIcons: lit on the call, gold off it.";
 				out.push_back(c);
 			};
-			// Warriors, one card in two parts (the user, 2026-10-04), as a squad Warrior explained it: the spear opener (spear 3,
-			// Disrupting Throw, only with Signet of Might and synced with the other Warriors; then spear 2, 4 and F1) and the
-			// melee burst (the Hydromancy swap, then F1 Bloodthirster first) into the wells. Harrier's Toss is poke, not judged.
+			// Warriors, one card in two parts, as a squad Warrior explained it: the spear opener (spear 3, Disrupting Throw, only
+			// with Signet of Might and synced with the other Warriors; then spear 2, 4 and F1) and the melee burst (the
+			// Hydromancy swap, then F1 Bloodthirster first) into the wells. Harrier's Toss is poke, not judged.
 			{
 				std::vector<Use> dt = CastsNamed(f, {"Disrupting Throw"}, 2);
 				std::vector<Use> burst;
@@ -353,7 +393,7 @@ namespace Ui
 					// the opener (a squad Warrior): spear 3 Disrupting Throw with Signet of Might, synced with the other Warriors, then
 					// spear 2 Maiming Spear, 4 Spearmarshal's Support and F1 Harrier's Toss. Openers: Disrupting Throws within 3 s of
 					// the first, at their middle cast. "No signet" only when the signet was ready (16 s since its last use: 20 s
-					// recharge, 16 s with Signet Mastery) and not used (the user, 2026-10-04).
+					// recharge, 16 s with Signet Mastery) and not used.
 					int withSig = 0, synced = 0, openerOk = 0, sigReadyMissed = 0;
 					std::vector<std::vector<const Use*>> openers;
 					for (const Use& u : dt)
@@ -372,9 +412,9 @@ namespace Ui
 						const int32_t at = op[op.size() / 2]->Ms;
 						for (const Use* u : op)
 						{
-							// the signet by its effect (the user, 2026-10-05: one used before the round showed as "not used"): its
-							// Unblockable on at the throw = used; its ready buff on = ready and not used; neither = recharging. A log
-							// without the buffs falls back to the casts (used in the 3 s before; ready 16 s after the last).
+							// the signet by its effect: its Unblockable on at the throw = used; its ready buff on = ready and not
+							// used; neither = recharging. A log without the buffs falls back to the casts (used in the 3 s before;
+							// ready 16 s after the last).
 							auto on = [&](const std::vector<std::pair<int32_t, int32_t>>& aSpans, int32_t aFrom, int32_t aTo)
 							{
 								return std::any_of(aSpans.begin(), aSpans.end(), [&](const std::pair<int32_t, int32_t>& sp) { return sp.first <= aTo && sp.second >= aFrom; });
@@ -392,8 +432,7 @@ namespace Ui
 							}
 							else { onBar = false; }
 							bool sync = std::any_of(dt.begin(), dt.end(), [&](const Use& o) { return o.By != u->By && std::abs(o.Ms - u->Ms) <= 1000; });
-							// the opener as a chain of icons: Signet of Might, the throw, then the follow-ups in the 4 s after (the user,
-							// 2026-10-05: icons with arrows, the names on hover, no slot numbers and no sentence)
+							// the opener as a chain of icons: Signet of Might, the throw, then the follow-ups in the 4 s after
 							bool sigOk = sig || !ready;
 							withSig += sig; synced += sync; openerOk += sigOk && sync;
 							sigReadyMissed += !sigOk;
@@ -469,17 +508,15 @@ namespace Ui
 					if (dt.empty() && !near) { c.Verdict = "off the call"; c.Kind = 2; }
 					else if (o <= m) { Rate(c, o, "on the call", "opener partly", sigReadyMissed * 2 >= static_cast<int>(dt.size()) - openerOk ? "opener: no signet" : "opener not synced"); }
 					else { Rate(c, m, "on the call", "burst partly", late * 2 >= near - on ? "burst late" : "burst early"); }
-					// each part explained on its heading's hover, not under the card (the user, 2026-10-05)
-					c.PartTips["SPEAR OPENER"] = "Signet of Might, then Disrupting Throw within 1 s of another Warrior's, then Maiming Spear, Spearmarshal's Support "
-						"and Harrier's Toss in the 4 s after. The strip: each throw against the opener's middle one. The icons: struck through in red, left out; "
-						"in grey, the signet was on cooldown. Hover an icon for when.";
-					c.PartTips["MELEE BURST"] = "The first Bloodthirster after each weapon swap, against " + std::string(refWord) + "; on the call from 1 s before to 2.5 s after, between the lines.";
+					// each part explained on its heading's hover, not under the card
+					c.PartTips["SPEAR OPENER"] = "Signet, then Disrupting Throw with another Warrior (1 s), then the spear skills.\nStruck red: left out; grey: on cooldown.";
+					c.PartTips["MELEE BURST"] = "First Bloodthirster after a swap; on the call: 1 s before to 2.5 s after " + std::string(refWord) + ".";
 					out.push_back(c);
 				}
 			}
 			into("chrono", "Chronomancer burst", {"Split Second", "Time Bomb"}, 7, true);
 			into("ele", "Elementalist burst", {"Meteor", "Firestorm", "Volcano", "Fulgor"}, 6);
-			// shroud 4: a core Necromancer's Life Transfer, a Reaper's Soul Spiral (the user, 2026-10-04)
+			// shroud 4: a core Necromancer's Life Transfer, a Reaper's Soul Spiral
 			into("necro", "Necromancer burst", {"Life Transfer", "Soul Spiral"}, 8);
 			// Winds of Disenchantment: one or two per spike (a cast outside our spikes can be area denial, not counted)
 			{
@@ -610,7 +647,7 @@ namespace Ui
 					std::string firstEarly;
 					// Enemy spikes are found in the damage that landed, and a Tale on time takes that damage: the spike it caught
 					// may not be there at all. So each Tale also counts the enemy hits in its distortion, the ones it absorbed
-					// with the ones that landed, against the hits a second of the round's enemy spikes (the user, 2026-10-05)
+					// with the ones that landed, against the hits a second of the round's enemy spikes
 					const size_t secs = static_cast<size_t>(f.DurationMs / 1000 + 1);
 					// enemy hits per ally per second, landed and absorbed (an invulnerability took them): [player][second]
 					std::vector<std::vector<int>> hits(f.Players.size(), std::vector<int>(secs, 0)), absorbed(f.Players.size(), std::vector<int>(secs, 0));
@@ -642,8 +679,40 @@ namespace Ui
 					for (int64_t t : f.TheirSpikesMs) { spikeRates.push_back(rate(everyone, t - 1000, t + 1000, hits)); }
 					std::sort(spikeRates.begin(), spikeRates.end());
 					const double spikeRate = spikeRates.empty() ? 0 : spikeRates[spikeRates.size() / 2];
-					for (const InvulnUse& u : tales)
+					// Tales go together: Tales within 3 s of the first of a group are one call; a Tale on its own belongs to the nearest
+					// call within 8 s and is off by its distance; together = within 1 s of the call's middle Tale. With one Troubadour's
+					// Tales only, there's nothing to sync with.
+					std::sort(tales.begin(), tales.end(), [](const InvulnUse& a, const InvulnUse& b) { return a.Ms < b.Ms; });
+					std::set<int> taleUsers;
+					for (const InvulnUse& u : tales) { taleUsers.insert(u.By); }
+					const bool sync = taleUsers.size() >= 2;
+					std::vector<std::vector<size_t>> groups;
+					for (size_t i = 0; i < tales.size(); i++)
 					{
+						if (groups.empty() || tales[i].Ms - tales[groups.back().front()].Ms > 3000) { groups.push_back({}); }
+						groups.back().push_back(i);
+					}
+					std::vector<int64_t> mids;
+					std::vector<int> callOf(tales.size(), -1);
+					std::vector<size_t> strays;
+					for (const auto& g : groups)
+					{
+						if (g.size() < 2 && sync) { strays.insert(strays.end(), g.begin(), g.end()); continue; }
+						// the call's middle: the middle Tale, or between the two middle ones (two Tales 1.4 s apart are 0.7 s off each)
+						mids.push_back(g.size() % 2 ? tales[g[g.size() / 2]].Ms : (tales[g[g.size() / 2 - 1]].Ms + tales[g[g.size() / 2]].Ms) / 2);
+						for (size_t i : g) { callOf[i] = static_cast<int>(mids.size()) - 1; }
+					}
+					for (size_t i : strays)
+					{
+						for (size_t k = 0; k < mids.size(); k++)
+						{
+							if (std::abs(tales[i].Ms - mids[k]) <= 8000 && (callOf[i] < 0 || std::abs(tales[i].Ms - mids[k]) < std::abs(tales[i].Ms - mids[callOf[i]]))) { callOf[i] = static_cast<int>(k); }
+						}
+					}
+					int together = 0, absorbedAll = 0, hitsAll = 0;
+					for (size_t ti = 0; ti < tales.size(); ti++)
+					{
+						const InvulnUse& u = tales[ti];
 						int64_t catchAt = -1, after = -1;
 						// a spike it caught: the spike's run overlaps its distortion (1 s slack either side); one it ran out before:
 						// starting after it, within 6 s of the use
@@ -656,49 +725,71 @@ namespace Ui
 						// a burst it took: on the allies it covered, enemy hits at an enemy spike's rate or more, most of them absorbed
 						const double inTale = rate(u.To, u.Ms, u.Ms + u.Duration, hits), took = rate(u.To, u.Ms, u.Ms + u.Duration, absorbed);
 						const bool burst = catchAt < 0 && spikeRate > 0 && inTale >= 0.6 * spikeRate && took * 2 >= inTale;
-						const bool ok = catchAt >= 0 || burst;
-						caught += ok;
-						bool tooEarly = !ok && after >= 0;
+						const bool caughtOne = catchAt >= 0 || burst;
+						// how much it took: the enemy hits its distortion absorbed on the allies it covered, of all enemy hits on them while it ran
+						int nAbsorbed = 0, nHits = 0;
+						for (int i : u.To)
+						{
+							if (i < 0 || static_cast<size_t>(i) >= f.Players.size()) { continue; }
+							for (int64_t b2 = std::max<int64_t>(0, u.Ms / 1000); b2 <= (u.Ms + u.Duration) / 1000 && b2 < static_cast<int64_t>(secs); b2++) { nAbsorbed += absorbed[i][b2]; nHits += hits[i][b2]; }
+						}
+						absorbedAll += nAbsorbed; hitsAll += nHits;
+						// together: within 1 s of its call's middle Tale; alone or further off, out of sync
+						const int64_t mid = callOf[ti] >= 0 ? mids[callOf[ti]] : u.Ms;
+						const int32_t off = static_cast<int32_t>(u.Ms - mid);
+						const bool synced = !sync || (callOf[ti] >= 0 && std::abs(off) <= 1000);
+						together += synced;
+						const bool ok = synced && caughtOne;
+						caught += caughtOne;
+						bool tooEarly = !caughtOne && after >= 0;
 						early += tooEarly;
 						if (tooEarly && firstEarly.empty()) { firstEarly = Duration(u.Ms) + ", enemy spike " + Duration(after); }
-						// a row of a table, not a sentence (the user, 2026-10-06: the card was full of text)
-						auto num = [](double v) { char buf[16]; std::snprintf(buf, sizeof buf, "%.1f", v); return std::string(buf); };
+						// a row of a table, not a sentence
 						CallRow r;
 						r.Who = f.Players[u.By].Name; r.Skill = "Tale of the August Queen"; r.Ms = u.Ms; r.Good = ok;
-						CallCell when{Duration(u.Ms)}, by{f.Players[u.By].Name}, what, on{std::to_string(u.To.size())}, inHits{num(inTale)}, inTook{num(took)};
-						on.Right = inHits.Right = inTook.Right = true;
-						if (catchAt >= 0) { what = {"spike " + Duration(catchAt), "The enemy spike's peak at " + Duration(catchAt) + " fell while its distortion ran.", 0}; }
-						else if (burst) { what = {"burst", "No enemy spike peak in it, but the allies it covered took enemy hits at a spike's rate or more, mostly absorbed.", 0}; }
-						else if (tooEarly) { what = {"too early", "It ran out before the enemy spike at " + Duration(after) + ".", 2}; }
-						else { what = {"none", "No enemy spike or burst while it ran.", 1}; }
-						r.Table = {when, by, what, on, inHits, inTook};
+						CallCell when{Duration(u.Ms)}, by{f.Players[u.By].Name}, offCell, what, took2{std::to_string(nAbsorbed)}, share{nHits ? std::to_string(100 * nAbsorbed / nHits) + "%" : std::string("-")};
+						took2.Right = share.Right = true;
+						if (!sync) { offCell = {"-", "Only one Troubadour: nothing to sync with.", 3}; }
+						else if (callOf[ti] < 0) { offCell = {"alone", "No other Tale within 8 s.", 2}; }
+						else { offCell = {Offset(off), synced ? "Together." : "Out of sync: its subgroup alone.", synced ? 0 : 2}; }
+						offCell.Right = true;
+						if (catchAt >= 0) { what = {"spike " + Duration(catchAt), "The spike's peak fell in it.", 0}; }
+						else if (burst) { what = {"burst", "Spike-rate hits on its allies, mostly absorbed.", 0}; }
+						else if (tooEarly) { what = {"too early", "Ran out before the spike at " + Duration(after) + ".", 2}; }
+						else { what = {"none", "No spike or burst in it.", 1}; }
+						took2.Tip = "Enemy hits absorbed on its " + std::to_string(u.To.size()) + " allies.";
+						share.Tip = nHits ? std::to_string(nAbsorbed) + " of " + std::to_string(nHits) + " enemy hits on its allies absorbed." : std::string("No enemy hits on its allies.");
+						share.Kind = !nHits ? 3 : nAbsorbed * 2 >= nHits ? 0 : nAbsorbed * 4 >= nHits ? 1 : 2;
+						r.Table = {when, by, offCell, what, took2, share};
 						c.Rows.push_back(r);
 					}
-					c.Num = caught; c.Den = static_cast<int>(tales.size());
-					c.Head = {"Used", "By", "Caught", "Allies", "Enemy hits /s each", "Absorbed /s each"};
-					c.HeadTips = {"When it went off", "Who used it", "The spike or burst it took", "Allies it covered", "Enemy hits per covered ally",
-						"Hits its distortion absorbed"};
-					c.Line = std::to_string(caught) + " of " + std::to_string(tales.size()) + " caught an enemy spike or burst";
-					if (spikeRate > 0)
-					{
-						char rateText[80];
-						std::snprintf(rateText, sizeof rateText, " \xc2\xb7 in an enemy spike: %.1f enemy hits /s on each ally", spikeRate);
-						c.Line += rateText;
-					}
-					c.Short = std::to_string(caught) + " of " + std::to_string(tales.size()) + " caught a spike";
+					const int n = static_cast<int>(tales.size());
+					int good = 0;
+					for (const CallRow& r : c.Rows) { good += r.Good; }
+					c.Num = good; c.Den = n;
+					c.Head = {"Used", "By", "Off", "Caught", "Absorbed", "Of hits"};
+					c.HeadTips = {"When it went off", "Who used it", "From the call's middle Tale", "The spike or burst it took", "Enemy hits it absorbed",
+						"Of enemy hits on its allies"};
+					c.Line = std::to_string(n) + (n == 1 ? " Tale" : " Tales") + (sync ? ": " + std::to_string(together) + " together" : std::string(":")) + ", " + std::to_string(caught) +
+						" caught a spike or burst";
+					if (hitsAll) { c.Line += " \xc2\xb7 absorbed " + std::to_string(absorbedAll) + " of " + std::to_string(hitsAll) + " enemy hits on their allies (" + std::to_string(100 * absorbedAll / hitsAll) + "%)"; }
 					if (early) { c.Line += " \xc2\xb7 " + std::to_string(early) + " too early (" + firstEarly + ")"; }
-					Rate(c, double(caught) / tales.size(), "on time", "partly", early ? "too early" : "missed");
-					c.Detail = "Each Tale: whether an enemy spike's peak fell while its distortion ran. As a Tale on time takes the damage that would "
-						"show the spike, it also counts the enemy hits on the allies it covered, absorbed or not: at an enemy spike's rate (hits a second "
-						"on each ally) or more, mostly absorbed, it took a burst.";
+					c.Short = std::to_string(good) + " of " + std::to_string(n) + " together on a spike";
+					// harsh: every Tale together and on a spike for "on time"; a Tale out of sync or wasted is never fine
+					if (good == n) { c.Verdict = "on time"; c.Kind = 0; }
+					else
+					{
+						c.Kind = good * 4 >= n * 3 ? 1 : 2;
+						c.Verdict = n - together >= n - caught ? "out of sync" : early ? "too early" : "missed";
+					}
+					c.Detail = "Together: within 1 s of the call's middle Tale.\nCounts when together and on a spike or burst.";
 					out.push_back(c);
 				}
 			}
 			if (!f.TheirSpikesMs.empty())
 			{
 				// stability at each enemy spike, a column per subgroup: how many of its members had it at the peak, what it blocked,
-				// who went down (the user, 2026-10-06: a list of givers' names told nothing; what matters is whether each
-				// subgroup had it when the spike hit, and how heavy the spike was)
+				// who went down
 				CallCard c;
 				c.Key = "stab"; c.Group = 1; c.Name = "Stability"; c.Should = "on every subgroup at enemy spikes"; c.Skill = -200 - Analysis::kStability;
 				std::vector<int> groups;
@@ -817,9 +908,7 @@ namespace Ui
 				}
 				c.Short = "held at " + std::to_string(held) + " of " + std::to_string(spikes) + " spikes";
 				Rate(c, spikes ? double(held) / spikes : 0.0, "held", "partly", "short");
-				c.Detail = "A row per enemy spike, a column per subgroup: of its members up at the spike's peak, how many had stability then. Blue: all; gold: half "
-					"or more; red: under half; grey: the enemy didn't hit that subgroup in the spike. A spike held when no subgroup it hit was red. The down "
-					"mark: allies downed in the spike. Hover a cell for who was without, the CC it took and who gave it.";
+				c.Detail = "Members with stability at each enemy spike's peak.\nBlue all; gold half or more; red under half; grey not hit.";
 				out.push_back(c);
 				// Druid heals before their spikes
 				std::vector<Use> heals = CastsNamed(f, {"Glyph of Alignment", "Healing Spring"});
@@ -830,20 +919,40 @@ namespace Ui
 					int before = 0;
 					for (int64_t t : f.TheirSpikesMs)
 					{
-						std::vector<std::string> who;
+						// each heal from 3 s before the peak to 3 s after on the strip; in time: the 3 s before (the spike's run start
+						// counts as its peak when it starts earlier); the icons are the heals in time, their caster on hover
 						auto [lo, hi] = SpikeWindow(f, false, t, 3000, 0, true);
-						for (const Use& u : heals) { if (u.Ms >= lo && u.Ms <= hi) { who.push_back(u.By->Name + " (" + Name(f, u.Skill) + ")"); } }
-						before += !who.empty();
-						std::string all;
-						for (const std::string& n : who) { all += (all.empty() ? "" : ", ") + n; }
-						h.Rows.push_back({who.empty() ? std::string("nobody") : std::to_string(who.size()) + (who.size() == 1 ? " cast" : " casts"), "", static_cast<int32_t>(t), "",
-							who.empty() ? std::string("none in the 3 s before") : all, !who.empty(), 0});
+						CallRow r;
+						r.Ms = static_cast<int32_t>(t);
+						r.Ref = Duration(t);
+						r.WinFrom = static_cast<int32_t>(lo - t);
+						r.WinTo = static_cast<int32_t>(hi - t);
+						int in = 0;
+						for (const Use& u : heals)
+						{
+							const int32_t off = static_cast<int32_t>(u.Ms - t);
+							if (off < -3000 || off > 3000) { continue; }
+							const bool ok = u.Ms >= lo && u.Ms <= hi;
+							in += ok;
+							r.Marks.push_back({off, ok, u.By->Name, Name(f, u.Skill)});
+							if (!ok) { continue; }
+							ChainStep st;
+							st.Name = Name(f, u.Skill);
+							st.Skill = u.Skill;
+							st.Tip = u.By->Name + ": " + st.Name + ", " + Offset(off) + " from the peak";
+							r.Chain.push_back(st);
+						}
+						before += in > 0;
+						r.Who = in ? std::to_string(in) + (in == 1 ? " heal" : " heals") : std::string("nobody");
+						r.What = ""; // the count is in the who column; the strip and the icons say when
+						r.Good = in > 0;
+						h.Rows.push_back(r);
 					}
 					h.Num = before; h.Den = static_cast<int>(f.TheirSpikesMs.size());
 					h.Line = "Glyph of Alignment, Healing Spring before " + std::to_string(before) + " of " + std::to_string(f.TheirSpikesMs.size()) + " enemy spikes";
 					h.Short = "before " + std::to_string(before) + " of " + std::to_string(f.TheirSpikesMs.size()) + " spikes";
 					Rate(h, double(before) / f.TheirSpikesMs.size(), "on time", "partly", "late");
-					h.Detail = "Each enemy spike: Glyph of Alignment or Healing Spring in the 3 s before its peak";
+					h.Detail = "Heals in the 3 s before the peak (shaded).\nHover an icon: who.";
 					out.push_back(h);
 				}
 			}

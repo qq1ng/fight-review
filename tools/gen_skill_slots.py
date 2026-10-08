@@ -1,7 +1,7 @@
 """Which slot each profession skill sits in (heal, utility, elite), from the public GW2 API.
 
 The log doesn't say which utility skills a player slotted. Post-fight we infer it from what they cast: a Mesmer who
-cast three different utility skills and not Illusion of Life that round didn't carry it (the user, 2026-09-24).
+cast three different utility skills and not Illusion of Life that round didn't carry it.
 Skills that share a slot (a mantra and the power skill it turns into, any flip skill) get the same root id, so they
 count as one slot.
 

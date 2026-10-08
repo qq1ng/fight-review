@@ -25,7 +25,7 @@ PROFESSIONS = {"Guardian": 1, "Warrior": 2, "Engineer": 3, "Ranger": 4, "Thief":
                "Necromancer": 8, "Revenant": 9}
 # Triggers, as in Analysis.cpp
 T_OTHER, T_DODGE, T_SWAP, T_HEAL, T_ELITE, T_KIND, T_INTERVAL, T_GRANT = range(8)
-# Read by hand where the description names no action the log shows as one (the user's builds, 2026-10-02):
+# Read by hand where the description names no action the log shows as one (checked against builds by hand):
 # Stalwart Speed gives quickness with every aegis or stability the Firebrand grants
 OVERRIDES = {2076: (T_GRANT, "Aegis,Stability")}
 WEAPONS = ["Axe", "Dagger", "Mace", "Pistol", "Scepter", "Sword", "Focus", "Shield", "Torch", "Warhorn", "Greatsword",

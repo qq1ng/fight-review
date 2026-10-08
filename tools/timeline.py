@@ -2,7 +2,7 @@
 
 Damage per second, out (squad and its minions on anyone not friendly) and in (anyone not friendly on squad
 members). A spike is a second that is the highest within 2 s either side, at least 1.4x the fight's median
-second and at least 50% of its biggest second (tuned with tools/spike_sweep.py, 2026-09-24).
+second and at least 50% of its biggest second (tuned with tools/spike_sweep.py).
 
 Usage:
     python tools/timeline.py <file.zevtc>

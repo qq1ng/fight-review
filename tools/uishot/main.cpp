@@ -215,9 +215,10 @@ namespace
 		return TextureFromBytes(aId, body.data(), body.size());
 	}
 
-	double s_RenderMs = 0; // CPU time of the last Ui::Render()
+	double s_RenderMs = 0; // CPU time of the last Ui::Render
 	ImVec2 s_Mouse(-FLT_MAX, -FLT_MAX); // --hover: where the mouse rests, to render a tooltip
-	ImVec2 s_WinSize(1153, 680);        // --size: the window's size (the user's, 2026-10-04)
+	bool s_MouseDown = false;           // --click: the left button held this frame
+	ImVec2 s_WinSize(1153, 680);        // --size: the window's size
 
 	void Frame()
 	{
@@ -225,6 +226,7 @@ namespace
 		io.DisplaySize = ImVec2(kWidth, kHeight);
 		io.DeltaTime = s_Icons ? 1.1f : 1.0f / 60.0f; // --icons: a second a frame (an icon is asked for once a second)
 		io.MousePos = s_Mouse;
+		io.MouseDown[0] = s_MouseDown;
 		ImGui_ImplDX11_NewFrame();
 		ImGui::NewFrame();
 		// (the small window draws first: shown alone, it keeps its own size)
@@ -303,7 +305,7 @@ int main(int argc, char** argv)
 		return 0;
 	}
 	std::string out = ".";
-	bool timing = false, jobs = false, rounds = false;
+	bool timing = false, jobs = false, rounds = false, calls = false;
 	std::string as; // --as <spec>: review the latest round as a player on that spec
 	std::string round; // --round <part of a log name>: review that round
 	std::string down;  // --down <player name>: the Deaths tab opens on their last down in that round
@@ -312,6 +314,7 @@ int main(int argc, char** argv)
 	float scale = 1.0f; // --scale <x>: a wider font, like the game's
 	std::vector<ImVec2> hovers; // --hover <x,y>: the window on its first pane with the mouse resting there (hover_N.png)
 	std::vector<ImVec2> miniHovers; // --minihover <x,y>: the small window with the mouse resting there (small_hover_N.png)
+	std::vector<ImVec2> clicks; // --click <x,y>: a click there on the --hoverpane pane; where it lands (click_N.png, printed)
 	std::string ini;            // --ini <arcdps.ini>: also render the empty window's first-run check against it (first_run.png)
 	std::string settings;       // --settings <settings.txt>: the addon's settings (the summary window's style); saved back to it
 	std::vector<Session::FightPtr> fights;
@@ -325,6 +328,7 @@ int main(int argc, char** argv)
 		if (std::strcmp(argv[i], "--time") == 0) { timing = true; continue; }
 		if (std::strcmp(argv[i], "--jobs") == 0) { jobs = true; continue; }
 		if (std::strcmp(argv[i], "--rounds") == 0) { rounds = true; continue; }
+		if (std::strcmp(argv[i], "--calls") == 0) { calls = true; continue; }
 		if (std::strcmp(argv[i], "--hoverpane") == 0 && i + 1 < argc) { hoverPane = std::atoi(argv[++i]); continue; }
 		if (std::strcmp(argv[i], "--as") == 0 && i + 1 < argc) { as = argv[++i]; continue; }
 		if (std::strcmp(argv[i], "--round") == 0 && i + 1 < argc) { round = argv[++i]; continue; }
@@ -332,6 +336,12 @@ int main(int argc, char** argv)
 		if (std::strcmp(argv[i], "--scale") == 0 && i + 1 < argc) { scale = static_cast<float>(std::atof(argv[++i])); continue; }
 		if (std::strcmp(argv[i], "--ini") == 0 && i + 1 < argc) { ini = argv[++i]; continue; }
 		if (std::strcmp(argv[i], "--settings") == 0 && i + 1 < argc) { settings = argv[++i]; continue; }
+		if (std::strcmp(argv[i], "--click") == 0 && i + 1 < argc)
+		{
+			float cx = 0, cy = 0;
+			if (std::sscanf(argv[++i], "%f,%f", &cx, &cy) == 2) { clicks.push_back(ImVec2(cx, cy)); }
+			continue;
+		}
 		if ((std::strcmp(argv[i], "--hover") == 0 || std::strcmp(argv[i], "--minihover") == 0) && i + 1 < argc)
 		{
 			bool mini = argv[i][2] == 'm';
@@ -420,6 +430,15 @@ int main(int argc, char** argv)
 		}
 		return 0;
 	}
+	if (calls)
+	{
+		// --calls: each round's call cards (key, on the call, of, verdict 0 on / 1 partly / 2 off), for analysis; no names
+		for (const auto& f : fights)
+		{
+			for (const Ui::CallCard& k : Ui::RoundCalls(*f)) { std::printf("call\t%s\t%s\t%d\t%d\t%d\n", f->Stamp.c_str(), k.Key.c_str(), k.Num, k.Den, k.Kind); }
+		}
+		return 0;
+	}
 	if (jobs)
 	{
 		// Each player's job list over these rounds, counted per spec and build (no names)
@@ -496,11 +515,12 @@ int main(int argc, char** argv)
 		struct Case { const char* Name; int Pane; bool AllRounds; };
 		const Case cases[] = {{"debrief, first pane", Ui::P_Home, false}, {"you, this round", Ui::P_You, false}, {"your night", Ui::P_Night, true},
 			{"a down", Ui::P_Down, false}, {"downs", Ui::P_Downs, false}, {"compare, this round", Ui::P_Compare, false}, {"compare, tonight", Ui::P_Compare, true},
-			{"round", Ui::P_Round, false}, {"squad", Ui::P_Squad, false}, {"calls", Ui::P_Calls, false}};
+			{"round", Ui::P_Round, false}, {"squad", Ui::P_Squad, false}, {"calls", Ui::P_Calls, false}, {"why, this round", Ui::P_Struggle, false},
+			{"why, tonight", Ui::P_Struggle, true}};
 		for (const Case& k : cases)
 		{
 			Ui::ForcedPane = k.Pane;
-			Ui::S().YouTonight = Ui::S().CompareTonight = Ui::S().SquadTonight = k.AllRounds;
+			Ui::S().YouTonight = Ui::S().CompareTonight = Ui::S().SquadTonight = Ui::S().StruggleNight = k.AllRounds;
 			// the first frames build the tab's caches (a hitch when switching tab or when a round arrives)
 			double first = 0;
 			for (int n = 0; n < 3; n++) { Frame(); first = std::max(first, s_RenderMs); }
@@ -529,7 +549,7 @@ int main(int argc, char** argv)
 		int busiest = 0;
 		for (int i = 0; i < static_cast<int>(fights.size()); i++) { if (fights[i]->SquadDowns > fights[busiest]->SquadDowns) { busiest = i; } }
 		Ui::S().Selected = busiest;
-		Ui::S().YouTonight = Ui::S().CompareTonight = Ui::S().SquadTonight = false;
+		Ui::S().YouTonight = Ui::S().CompareTonight = Ui::S().SquadTonight = Ui::S().StruggleNight = false;
 		Ui::ForcedOpen = Ui::kForceReviveOrder;
 		for (int pane : {Ui::P_Round, Ui::P_Downs, Ui::P_Down, Ui::P_Revives})
 		{
@@ -539,6 +559,35 @@ int main(int argc, char** argv)
 			for (int n = 0; n < 30; n++) { Frame(); sum += s_RenderMs; worst = std::max(worst, s_RenderMs); }
 			const char* name = pane == Ui::P_Round ? "round" : pane == Ui::P_Downs ? "downs" : pane == Ui::P_Down ? "a down" : "revives";
 			std::printf("%s, round %d %5.2f ms per frame (worst %.2f), %d downs\n", name, busiest + 1, sum / 30, worst, fights[busiest]->SquadDowns);
+		}
+		// every spike of every round broken down once, both sides (a long spike's window once wrote past its bins:
+		// 2026-10-06), the worst frame
+		{
+			Ui::ForcedOpen = -1;
+			Ui::ForcedPane = Ui::P_Round;
+			int drawn = 0;
+			double worst = 0, sum = 0;
+			for (int i = 0; i < static_cast<int>(fights.size()); i++)
+			{
+				Ui::S().Selected = i;
+				for (bool enemy : {false, true})
+				{
+					for (int64_t t : enemy ? fights[i]->TheirSpikesMs : fights[i]->OurSpikesMs)
+					{
+						Ui::S().SpikeOpen = t;
+						Ui::S().SpikeEnemy = enemy;
+						Ui::S().SpikeStamp = fights[i]->Stamp;
+						Frame(); // builds the spike's view
+						Frame();
+						worst = std::max(worst, s_RenderMs);
+						sum += s_RenderMs;
+						drawn++;
+					}
+				}
+			}
+			Ui::S().SpikeOpen = -1;
+			Ui::S().SpikeEnemy = false;
+			std::printf("%-22s %6.2f ms per frame (worst %.2f), %d spikes\n", "spike breakdowns", drawn ? sum / drawn : 0.0, worst, drawn);
 		}
 		Ui::ForcedOpen = -1;
 		Ui::ForcedPane = -1;
@@ -620,10 +669,27 @@ int main(int argc, char** argv)
 	save("calls_stab", true);
 	Ui::S().CallOpen = "chrono";
 	save("calls_chrono");
+	Ui::S().CallOpen = "ele";
+	save("calls_ele");
+	Ui::S().CallOpen = "necro";
+	save("calls_necro");
+	Ui::S().CallOpen = "heals";
+	save("calls_heals", true);
+	Ui::S().CallOpen.clear();
+	// why the round was lost or won, and tonight
+	Ui::ForcedPane = Ui::P_Struggle;
+	save("struggle");
+	save("struggle_bottom", true);
+	Ui::S().StruggleNight = true;
+	save("struggle_night");
+	save("struggle_night_bottom", true);
+	Ui::S().StruggleNight = false;
 	Ui::S().CallOpen.clear();
 	Ui::ForcedPane = Ui::P_Squad;
 	Ui::S().ColumnSet = 2; // Defence
 	save("squad_defence");
+	Ui::S().ColumnSet = 5; // the stability givers
+	save("squad_stability");
 	Ui::S().ColumnSet = -1;
 	for (size_t i = 0; i < hovers.size(); i++)
 	{
@@ -632,6 +698,27 @@ int main(int argc, char** argv)
 		save(("hover_" + std::to_string(i + 1)).c_str());
 	}
 	s_Mouse = ImVec2(-FLT_MAX, -FLT_MAX);
+	// clicks: the pane shown, the mouse resting on the spot, a press and a release, then where it went
+	const int clickRound = Ui::S().Selected;
+	for (size_t i = 0; i < clicks.size(); i++)
+	{
+		Ui::S().Back.clear();
+		Ui::S().Selected = clickRound;
+		Ui::ForcedPane = hoverPane;
+		s_Mouse = clicks[i];
+		for (int n = 0; n < 4; n++) { Frame(); }
+		Ui::ForcedPane = -1;
+		s_MouseDown = true;
+		Frame();
+		s_MouseDown = false;
+		Frame();
+		s_Mouse = ImVec2(-FLT_MAX, -FLT_MAX);
+		const Ui::State& st = Ui::S();
+		std::printf("click %zu at %.0f,%.0f: pane %d, death filter %d cause %d, spike %lld (%s), round view %d, selected %d\n", i + 1, clicks[i].x, clicks[i].y, st.Shown,
+			st.DeathFilter, st.DeathCause, static_cast<long long>(st.SpikeOpen), st.SpikeEnemy ? "enemy" : "ally", st.RoundView, st.Selected);
+		save(("click_" + std::to_string(i + 1)).c_str());
+		Ui::S().DeathFilter = 0; Ui::S().DeathCause = -1; Ui::S().SpikeOpen = -1; Ui::S().Selected = clickRound; Ui::S().StruggleNight = false;
+	}
 	// the revives pane (the revive order open), and Round scrolled to the end
 	Ui::ForcedPane = Ui::P_Revives;
 	Ui::ForcedOpen = Ui::kForceReviveOrder;

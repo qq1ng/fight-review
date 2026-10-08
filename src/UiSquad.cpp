@@ -59,6 +59,24 @@ namespace Ui
 
 		std::string Pct(double v) { return std::to_string(int(v + 0.5)) + "%"; }
 
+		// Of the CC that landed on this player in enemy spikes, how much a stun break ended early; -1 for a summed
+		// player (tonight), who isn't in the round's list
+		std::pair<int, int> BrokeOut(const Fight& f, const Player& p)
+		{
+			if (f.Players.empty() || &p < f.Players.data() || &p >= f.Players.data() + f.Players.size()) { return {-1, -1}; }
+			const int idx = static_cast<int>(&p - f.Players.data());
+			int n = 0, all = 0;
+			for (const auto& h : p.CcIn)
+			{
+				bool in = false;
+				for (int64_t t : f.TheirSpikesMs) { auto [a, b] = SpikeWindow(f, false, t, 3000, 500); if (h.Ms >= a && h.Ms <= b) { in = true; break; } }
+				if (!in) { continue; }
+				all++;
+				for (const auto& b : f.StunBreaks) { if (b.Player == idx && b.Ms >= h.Ms && b.Ms <= h.Ms + std::max(0, h.Duration) + 100) { n++; break; } }
+			}
+			return {n, all};
+		}
+
 		const std::vector<Column>& Columns()
 		{
 			static std::vector<Column> cols = []
@@ -100,8 +118,9 @@ namespace Ui
 				v.push_back({"Blocks", "Enemy hits blocked", [](const Fight&, const Player& p) { return double(p.Blocks); }, whole, S_Defence});
 				v.push_back({"Invulns", "Enemy hits absorbed", [](const Fight&, const Player& p) { return double(p.Invulns); }, whole, S_Defence});
 				v.push_back({"CC taken", "Times crowd controlled", [](const Fight&, const Player& p) { return double(p.CcTaken); }, whole, S_Defence});
-				// invulnerability used in enemy spikes, of all uses (the user, 2026-10-03): Tale of the August Queen counts for
-				// whoever cast it
+				v.push_back({"Broke out", "Spike CC broken early", [](const Fight& f, const Player& p) { auto [n, all] = BrokeOut(f, p); return all > 0 ? double(n) / all : -1.0; },
+					[](const Fight& f, const Player& p, double v) { if (v < 0) { return std::string("-"); } auto [n, all] = BrokeOut(f, p); return std::to_string(n) + " of " + std::to_string(all); }, S_Defence});
+				// invulnerability used in enemy spikes, of all uses: Tale of the August Queen counts for whoever cast it
 				v.push_back({"Invuln in spikes", "Distortion used in enemy spikes", [](const Fight&, const Player& p) { return p.DistortionUses ? double(p.DistortionInSpikes) / p.DistortionUses : -1.0; },
 					[](const Fight&, const Player& p, double v) { return v < 0 ? std::string("-") : std::to_string(p.DistortionInSpikes) + " of " + std::to_string(p.DistortionUses); }, S_Defence});
 				for (int b = 0; b < Analysis::kBoons; b++)
@@ -133,7 +152,7 @@ namespace Ui
 			ImGui::TableNextColumn(); Key(kEnemy, "Enemy");
 			NumCell(std::to_string(f.EnemyCount)); NumCell(std::to_string(f.EnemyDowns)); NumCell(std::to_string(f.EnemyDeaths));
 			NumCell(Num(double(f.EnemyDamage))); NumCell(std::to_string(f.TheirSpikesMs.size())); NumCell(Num(double(f.EnemyPetsTook)));
-			// two enemy teams at once: a row each (the user, 2026-10-05), players, downed and killed; the rest isn't split
+			// two enemy teams at once: a row each, players, downed and killed; the rest isn't split
 			std::vector<EnemyTeam> teams = EnemyTeams(f);
 			if (teams.size() >= 2)
 			{
@@ -335,8 +354,7 @@ namespace Ui
 				}
 				ImGui::TableNextColumn();
 				std::string name = p->Name + (p->Pov ? " (you)" : "");
-				// a name opens Compare: you against them, or you against the best on your spec (the user, 2026-10-05: the way
-				// into Compare for anyone, downed or not)
+				// a name opens Compare: you against them, or you against the best on your spec
 				if (ImGui::Selectable(name.c_str(), false))
 				{
 					State& st = S();

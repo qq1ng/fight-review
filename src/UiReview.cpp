@@ -69,9 +69,9 @@ namespace Ui
 			return SpikeOf(f, false, aMs) >= 0;
 		}
 
-		// A build's key skill on time (the Snow Crows guides, 2026-09-29): jobs named "<skill> in our spike" (cast within
-		// 2 s of our spike's peak: Well of Corruption, Nightfall, Crescendo on the main call) or "<skill> before enemy
-		// spikes" (in the 4 s before one: stability ahead of their CC). Returns the skill and the timing class, or -1.
+		// A build's key skill on time (the Snow Crows guides): jobs named "<skill> in our spike" (cast within 2 s of our
+		// spike's peak: Well of Corruption, Nightfall, Crescendo on the main call) or "<skill> before enemy spikes" (in
+		// the 4 s before one: stability ahead of their CC). Returns the skill and the timing class, or -1.
 		const char* const kInOurSpike = " in an ally spike";
 		const char* const kBeforeTheirs = " before enemy spikes";
 		std::pair<std::string, int> KeySkillOf(const std::string& aJob)
@@ -111,8 +111,8 @@ namespace Ui
 			const Metric& m = Metrics()[c.RoleMetric];
 
 			// Skills of your role's main output. Only against your own spec: a Specter compared with a Druid (nobody
-			// else on Specter) would be told to cast Rejuvenating Tides (the user, 2026-09-24). Across specs the role's
-			// total is the fix instead.
+			// else on Specter) would be told to cast Rejuvenating Tides. Across specs the role's total is the fix
+			// instead.
 			if (!c.SameSpec && Known(m, you) && Known(m, vs))
 			{
 				double y = Rate(m, you, m.Total(you)), t = Rate(m, vs, m.Total(vs));
@@ -126,9 +126,8 @@ namespace Ui
 					out.push_back(f);
 				}
 			}
-			// Not for stability: a build gives it from many skills, so one skill's casts or timing says little (the user,
-			// 2026-10-01: Power Break "cast late", then "fewer casts", on a Troubadour); CC covered, the stability that
-			// blocked CC and the stability left over judge it whole
+			// Not for stability: a build gives it from many skills, so one skill's casts or timing says little; CC
+			// covered, the stability that blocked CC and the stability left over judge it whole
 			if (c.SameSpec && Known(m, you) && Known(m, vs) && c.RoleMetric != kMetricGroupBoon + Analysis::kStability)
 			{
 				double total = std::max(Rate(m, vs, m.Total(vs)), 1e-9);
@@ -143,9 +142,8 @@ namespace Ui
 					const SkillRow* rowY = Row(you, s);
 					const SkillRow* rowT = Row(vs, s);
 					int castsY = rowY ? rowY->Casts : 0, castsT = rowT ? rowT->Casts : 0;
-					// a skill you never used tonight on this spec isn't on your bar: a build choice, not a fix (the user,
-					// 2026-09-25: Tale of the Honorable Rogue "not used" when it wasn't equipped), unless their lead comes
-					// from it: a quarter of their output or more, with you 10%+ behind (the user, 2026-09-26)
+					// a skill you never used tonight on this spec isn't on your bar: a build choice, not a fix, unless
+					// their lead comes from it: a quarter of their output or more, with you 10%+ behind
 					bool offBar = castsY == 0 && !c.UsedTonight.count(s);
 					if (offBar)
 					{
@@ -283,8 +281,8 @@ namespace Ui
 					vs.Name + ": " + std::to_string(it) + " of " + std::to_string(at) + ".");
 			}
 
-			// Your stability as a whole (the user, 2026-10-01): on your subgroup when enemy spikes peaked, and how much of
-			// it went on top of another provider's (TopStats' redundancy, lower is better)
+			// Your stability as a whole: on your subgroup when enemy spikes peaked, and how much of it went on top of
+			// another provider's (TopStats' redundancy, lower is better)
 			if (you.StabSpikes >= 2 && vs.StabSpikes >= 2)
 			{
 				double y = 100.0 * you.StabSpikeShare / you.StabSpikes, t = 100.0 * vs.StabSpikeShare / vs.StabSpikes;
@@ -517,8 +515,8 @@ namespace Ui
 					[](const Player& p) { return p.StabEligible >= 3 ? 100.0 * p.StabCovered / p.StabEligible : 0.0; },
 					[](double v) { return std::to_string(int(v + 0.5)) + "%"; }, 1, false});
 			}
-			// Your stability as a whole, not one skill's casts (the user, 2026-10-01: a Troubadour has many stability skills):
-			// on your subgroup when their spikes peaked, and TopStats' redundancy (lower is better)
+			// Your stability as a whole, not one skill's casts: on your subgroup when their spikes peaked, and TopStats'
+			// redundancy (lower is better)
 			{
 				auto pct = [](double v) { return std::to_string(int(v + 0.5)) + "%"; };
 				if (c.You.StabSpikes >= 2)
@@ -924,8 +922,7 @@ namespace Ui
 			ImGui::TextColored(kMuted, "A short round (%s): its totals are small and one skill decides a rank; your usual is scaled to its length.",
 				Duration(c.F->DurationMs).c_str());
 		}
-		// Three cards: your role's number and your two biggest gaps among your jobs; your other jobs as rows (the user's
-		// v7 pick: nine cards were too many)
+		// Three cards: your role's number and your two biggest gaps among your jobs; your other jobs as rows
 		std::vector<MeasureRow> cards;
 		std::vector<const MeasureRow*> others, empty;
 		if (!rows.empty()) { cards.push_back(rows[0]); }
@@ -956,7 +953,7 @@ namespace Ui
 		ImGui::PopStyleVar();
 		if (otherJobs)
 		{
-			// each column as wide as its widest entry, so headings sit by their numbers (the user, 2026-10-01: spread out)
+			// each column as wide as its widest entry, so headings sit by their numbers
 			ImGui::TableSetupColumn("Your other jobs", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("You", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("Best", ImGuiTableColumnFlags_WidthFixed);
@@ -1198,8 +1195,8 @@ namespace Ui
 		const Night& n = NightOf(c);
 		float lh = ImGui::GetTextLineHeight();
 
-		// Which fixes kept coming back, over the night (the user's v5): in how many of your rounds, the reason it came up
-		// most, your typical number against the one compared (medians over those rounds), and which rounds
+		// Which fixes kept coming back, over the night: in how many of your rounds, the reason it came up most, your
+		// typical number against the one compared (medians over those rounds), and which rounds
 		struct Recur
 		{
 			std::string Key, Subject, Latest, Unit;

@@ -1,6 +1,6 @@
-// The debrief, the window's left side (the v10 design, the user's pick 2026-10-04, at their 1153 px window): the six
+// The debrief, the window's left side (the v10 design, at a 1153 px window): the six
 // questions in fixed places, each part a click into its detail at the right and more on hover. The round (the result,
-// both sides' damage with every spike on a strip, three reasons against tonight), you (your down as steps, your rank on
+// both sides' damage with every spike on a strip, CC both ways against tonight), you (your down as steps, your rank on
 // your spec), the squad's downs as the game's squad window (a row per subgroup), the enemy, the best this round, the
 // calls. The small window shows the same in lines (250 px; the player picks the lines). The calls' cards are a pane of
 // their own. Worked out once per round: the window draws every frame.
@@ -14,6 +14,7 @@
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
 
+#include "Causes.h"
 #include "Ui.h"
 #include "UiCommon.h"
 
@@ -55,7 +56,7 @@ namespace Ui
 			int64_t OurTotal = 0, TheirTotal = 0;
 		};
 
-		// One of the three reasons: this round against the middle of tonight's rounds. Kind: 0 better, 1 about, 2 worse
+		// One of the Round part's lines: this round against the middle of tonight's rounds. Kind: 0 better, 1 about, 2 worse
 		struct Reason { std::string Text, Value, Unit, Usual; int Kind = 1; std::string Short; }; // Short: the small window's
 
 		// A moment of your down, for the hovers: when (from the down), what, which skill, which enemy
@@ -184,26 +185,6 @@ namespace Ui
 		}
 
 		std::string EnemySpec(const Fight& f, int aEnemy) { return aEnemy >= 0 && aEnemy < static_cast<int>(f.Enemies.size()) ? f.Enemies[aEnemy].Spec : std::string("NPC or siege"); }
-
-		// An enemy's spec as a Player, so SpecIconAt draws its class icon (elite ids as in Evtc's SpecName)
-		Player SpecPlayer(const std::string& aSpec)
-		{
-			struct Row { const char* Name; uint32_t Prof, Elite; };
-			static const Row kRows[] = {
-				{"Guardian", 1, 0}, {"Dragonhunter", 1, 27}, {"Firebrand", 1, 62}, {"Willbender", 1, 65}, {"Luminary", 1, 81},
-				{"Warrior", 2, 0}, {"Berserker", 2, 18}, {"Spellbreaker", 2, 61}, {"Bladesworn", 2, 68}, {"Paragon", 2, 74},
-				{"Engineer", 3, 0}, {"Scrapper", 3, 43}, {"Holosmith", 3, 57}, {"Mechanist", 3, 70}, {"Amalgam", 3, 75},
-				{"Ranger", 4, 0}, {"Druid", 4, 5}, {"Soulbeast", 4, 55}, {"Untamed", 4, 72}, {"Galeshot", 4, 78},
-				{"Thief", 5, 0}, {"Daredevil", 5, 7}, {"Deadeye", 5, 58}, {"Specter", 5, 71}, {"Antiquary", 5, 77},
-				{"Elementalist", 6, 0}, {"Tempest", 6, 48}, {"Weaver", 6, 56}, {"Catalyst", 6, 67}, {"Evoker", 6, 80},
-				{"Mesmer", 7, 0}, {"Chronomancer", 7, 40}, {"Mirage", 7, 59}, {"Virtuoso", 7, 66}, {"Troubadour", 7, 73},
-				{"Necromancer", 8, 0}, {"Reaper", 8, 34}, {"Scourge", 8, 60}, {"Harbinger", 8, 64}, {"Ritualist", 8, 76},
-				{"Revenant", 9, 0}, {"Herald", 9, 52}, {"Renegade", 9, 63}, {"Vindicator", 9, 69}, {"Conduit", 9, 79}};
-			Player p;
-			p.Spec = aSpec;
-			for (const Row& r : kRows) { if (aSpec == r.Name) { p.ProfId = r.Prof; p.EliteId = r.Elite; } }
-			return p;
-		}
 
 		// The enemy strike that came with a CC or strip (same enemy, within 50 ms, as Deaths does it): its skill, 0 if none
 		int32_t StrikeWith(const Player& p, int32_t aMs, int aEnemy)
@@ -371,26 +352,23 @@ namespace Ui
 			return v.size() % 2 ? v[v.size() / 2] : 0.5 * (v[v.size() / 2 - 1] + v[v.size() / 2]);
 		}
 
-		// Downs that fell in a side's spikes (SpikeOf's window), per spike of that side
-		double PerSpike(const Fight& g, bool aOurs)
-		{
-			const auto& spikes = aOurs ? g.OurSpikesMs : g.TheirSpikesMs;
-			const auto& downs = aOurs ? g.EnemyDownMs : g.SquadDownMs;
-			if (spikes.empty()) { return 0; }
-			int n = 0;
-			for (int32_t d : downs) { n += SpikeOf(g, aOurs, d) >= 0; }
-			return double(n) / double(spikes.size());
-		}
-
 		// CC both ways: a CC in the log is one that landed; one that stability blocked only used up a stack (in tonight's
 		// logs, 2 or 3 of 150 to 240 CC on allies came with a stack still on). Blocked and landed, on allies and on enemies.
-		struct CcWays { int AllyBlocked = 0, AllyLanded = 0, EnemyBlocked = 0, EnemyLanded = 0; };
+		// CC both ways, until allies stopped fighting (Causes::StopMs: the round was decided; the CC on a squad running for
+		// the reset isn't what decided it)
+		struct CcWays { int AllyBlocked = 0, AllyLanded = 0, EnemyBlocked = 0, EnemyLanded = 0; int32_t Until = -1; };
 		CcWays CcOf(const Fight& g)
 		{
 			CcWays w;
-			for (const Player& p : g.Players) { w.AllyBlocked += p.StabUsedUp; w.AllyLanded += p.CcTaken; }
-			w.EnemyBlocked = g.EnemyStabUsedUp;
-			w.EnemyLanded = static_cast<int>(g.OurCcMs.size());
+			w.Until = Causes::StopMs(g.ToPlayersPerS);
+			auto in = [&](int32_t aMs) { return w.Until < 0 || aMs < w.Until; };
+			for (const Player& p : g.Players)
+			{
+				for (const auto& [ms, kind] : p.StabLost) { w.AllyBlocked += kind == 1 && in(ms); }
+				for (int32_t ms : p.CcMs) { w.AllyLanded += in(ms); }
+			}
+			for (const auto& e : g.Enemies) { for (const auto& b : e.StabBlocked) { w.EnemyBlocked += in(b.Ms); } }
+			for (int32_t ms : g.OurCcMs) { w.EnemyLanded += in(ms); }
 			return w;
 		}
 		double Share(int aPart, int aOther) { return aPart + aOther > 0 ? 100.0 * aPart / (aPart + aOther) : -1; }
@@ -463,75 +441,58 @@ namespace Ui
 				}
 			}
 
-			// three reasons: this round against the middle of tonight's rounds (3+ spikes each side), in the result's order
+			// the round's CC both ways against the middle of tonight's rounds (3+ spikes each side). The spike lines (allies and
+			// enemies downed per spike) were the result, not a reason, and led nearly every round: gone. Worst first in a lost
+			// round, best first in a won one; the further from tonight's middle first when alike. Counted until allies stopped
+			// fighting (CcOf).
 			{
-				std::vector<double> ours, theirs, blocked, landed;
+				std::vector<double> blocked, landed;
 				for (const FightPtr& fp : *c.Fights)
 				{
 					const Fight& g = *fp;
 					if (g.OurSpikesMs.size() < 3 || g.TheirSpikesMs.size() < 3) { continue; }
-					ours.push_back(PerSpike(g, true));
-					theirs.push_back(PerSpike(g, false));
 					CcWays cw = CcOf(g);
 					if (double b = Share(cw.AllyBlocked, cw.AllyLanded); b >= 0) { blocked.push_back(b); }
 					if (double l = Share(cw.EnemyLanded, cw.EnemyBlocked); l >= 0) { landed.push_back(l); }
 				}
 				for (int32_t d : f.SquadDownMs) { x.InTheirSpikes += SpikeOf(f, false, d) >= 0; }
-				int ourIn = 0;
-				for (int32_t d : f.EnemyDownMs) { ourIn += SpikeOf(f, true, d) >= 0; }
 				Cover(f, x.CcWin, x.CcHit);
-				const bool night = ours.size() >= 3;
-				double o = PerSpike(f, true), th = PerSpike(f, false), cv = x.CcWin ? 100.0 * x.CcHit / x.CcWin : -1;
-				double mo = Median(ours), mt = Median(theirs);
+				const double cv = x.CcWin ? 100.0 * x.CcHit / x.CcWin : -1;
 				const CcWays cw = CcOf(f);
 				const double bl = Share(cw.AllyBlocked, cw.AllyLanded), la = Share(cw.EnemyLanded, cw.EnemyBlocked);
-				const double mb = Median(blocked), ml = Median(landed);
-				auto pctKind = [&](double aValue, double aUsual) { return aValue < 0 || aUsual < 0 || !night ? 1 : aValue < aUsual - 3 ? 2 : aValue > aUsual + 3 ? 0 : 1; };
-				auto kind = [&](double aValue, double aUsual, bool aMoreIsBetter, double aSlack)
-				{
-					if (!night || aUsual < 0 || aValue < 0) { return 1; }
-					bool more = aValue > aUsual * (1 + aSlack) + 0.05, less = aValue < aUsual * (1 - aSlack) - 0.05;
-					return more ? (aMoreIsBetter ? 0 : 2) : less ? (aMoreIsBetter ? 2 : 0) : 1;
-				};
-				Reason rt{"Enemy spikes downed", One(th), "each", night ? "tonight " + One(mt) : std::string(), kind(th, mt, false, 0.15)};
-				Reason ro{"Ally spikes downed", One(o), "each", night ? "tonight " + One(mo) : std::string(), kind(o, mo, true, 0.15)};
-				// CC both ways (the user, 2026-10-05: is "CC on allies covered" accurate? and the same for our CC): what stability
-				// blocked on allies, what of ours landed on enemies
-				Reason rc{"CC on allies blocked", bl < 0 ? std::string("no CC") : Pct(bl), "", night && mb >= 0 ? "tonight " + Pct(mb) : std::string(), pctKind(bl, mb)};
-				Reason rl{"Ally CC landed", la < 0 ? std::string("no CC") : Pct(la), "", night && ml >= 0 ? "tonight " + Pct(ml) : std::string(), pctKind(la, ml)};
+				const double mb = blocked.size() >= 3 ? Median(blocked) : -1, ml = landed.size() >= 3 ? Median(landed) : -1;
+				auto pctKind = [&](double aValue, double aUsual) { return aValue < 0 || aUsual < 0 ? 1 : aValue < aUsual - 3 ? 2 : aValue > aUsual + 3 ? 0 : 1; };
+				// CC both ways: what stability blocked on allies, what of ours landed on enemies
+				Reason rc{"CC on allies blocked", bl < 0 ? std::string("no CC") : Pct(bl), "", mb >= 0 ? "tonight " + Pct(mb) : std::string(), pctKind(bl, mb)};
+				Reason rl{"Ally CC landed", la < 0 ? std::string("no CC") : Pct(la), "", ml >= 0 ? "tonight " + Pct(ml) : std::string(), pctKind(la, ml)};
 				// the small window's line (250 px): the number in words, tonight's beside it when it fits
-				rt.Short = "Enemy spikes: " + rt.Value + " downs each";
-				ro.Short = "Ally spikes: " + ro.Value + " downs each";
 				rc.Short = "CC on allies blocked: " + rc.Value;
 				rl.Short = "Ally CC landed: " + rl.Value;
-				if (x.Lost) { x.Reasons = {rt, ro, rc, rl}; } else { x.Reasons = {ro, rt, rl, rc}; }
-				auto range = [](const std::vector<double>& v, bool aPct)
+				auto gap = [](double aValue, double aUsual) { return aValue < 0 || aUsual < 0 ? 0.0 : std::abs(aValue - aUsual); };
+				const bool landedFirst = x.Lost ? (rl.Kind > rc.Kind || (rl.Kind == rc.Kind && gap(la, ml) > gap(bl, mb)))
+					: (rl.Kind < rc.Kind || (rl.Kind == rc.Kind && gap(la, ml) > gap(bl, mb)));
+				x.Reasons = landedFirst ? std::vector<Reason>{rl, rc} : std::vector<Reason>{rc, rl};
+				auto range = [](const std::vector<double>& v)
 				{
 					if (v.empty()) { return std::string(); }
 					auto [lo, hi] = std::minmax_element(v.begin(), v.end());
-					return aPct ? Pct(*lo) + " to " + Pct(*hi) : One(*lo) + " to " + One(*hi);
+					return Pct(*lo) + " to " + Pct(*hi);
 				};
-				x.ReasonTip.push_back("Enemy spikes downed " + One(th) + " each: " + std::to_string(x.InTheirSpikes) + " of " + std::to_string(f.SquadDowns) +
-					" ally downs came in the " + std::to_string(f.TheirSpikesMs.size()) + " enemy spikes.");
-				if (night) { x.ReasonTip.push_back("   Tonight: " + One(mt) + " in the middle of " + std::to_string(theirs.size()) + " rounds (" + range(theirs, false) + ")."); }
-				x.ReasonTip.push_back("Ally spikes downed " + One(o) + " each: " + std::to_string(ourIn) + " of " + std::to_string(f.EnemyDowns) +
-					" enemy downs came in the " + std::to_string(f.OurSpikesMs.size()) + " ally spikes.");
-				if (night) { x.ReasonTip.push_back("   Tonight: " + One(mo) + " (" + range(ours, false) + ")."); }
 				if (bl >= 0)
 				{
 					x.ReasonTip.push_back("CC on allies blocked " + Pct(bl) + ": stability took " + std::to_string(cw.AllyBlocked) + " of " + std::to_string(cw.AllyBlocked + cw.AllyLanded) +
 						" enemy CC hits on allies; " + std::to_string(cw.AllyLanded) + " landed.");
-					if (night && mb >= 0) { x.ReasonTip.push_back("   Tonight: " + Pct(mb) + " (" + range(blocked, true) + ")."); }
+					if (mb >= 0) { x.ReasonTip.push_back("   Tonight: " + Pct(mb) + " in the middle of " + std::to_string(blocked.size()) + " rounds (" + range(blocked) + ")."); }
 				}
 				if (la >= 0)
 				{
 					x.ReasonTip.push_back("Ally CC landed " + Pct(la) + ": " + std::to_string(cw.EnemyLanded) + " of " + std::to_string(cw.EnemyLanded + cw.EnemyBlocked) +
 						" ally CC hits on enemies; their stability took " + std::to_string(cw.EnemyBlocked) + ".");
-					if (night && ml >= 0) { x.ReasonTip.push_back("   Tonight: " + Pct(ml) + " (" + range(landed, true) + ")."); }
+					if (ml >= 0) { x.ReasonTip.push_back("   Tonight: " + Pct(ml) + " (" + range(landed) + ")."); }
 				}
 				x.ReasonTip.push_back("   A CC hit: one CC on one player. A blocked one used up a stability stack.");
+				if (cw.Until >= 0) { x.ReasonTip.push_back("   Counted until allies stopped fighting at " + Duration(cw.Until) + ": the CC after it didn't decide the round."); }
 				if (x.CcWin > 0) { x.ReasonTip.push_back("   TopStats' CC coverage (a stack around the CC, 0.75 s): " + Pct(cv) + ", the Squad view's column."); }
-				x.ReasonTip.push_back("A spike counts downs from 3 s before its peak to 4 s after.");
 			}
 
 			// both sides' totals: CC (every CC hit, as TopStats counts it), strips, damage by skill and who used it
@@ -627,7 +588,7 @@ namespace Ui
 				for (const auto& st : d.P->StripsIn) { stripped |= st.Boon == Analysis::kStability && st.Ms >= d.S.From - 6000 && st.Ms <= d.S.From; }
 				x.StrippedFirst += stripped;
 			}
-			// the squad as the game's squad window: a row per subgroup, its members across (the user, 2026-10-04)
+			// the squad as the game's squad window: a row per subgroup, its members across
 			{
 				const int cmd = f.Commander >= 0 ? f.Players[f.Commander].Subgroup : -1;
 				std::map<int, std::vector<const Player*>> bySg;
@@ -667,7 +628,7 @@ namespace Ui
 				std::sort(x.Enemy.begin(), x.Enemy.end(), [](const Facts::Spec& a, const Facts::Spec& b) { return a.Count != b.Count ? a.Count > b.Count : a.Name < b.Name; });
 				for (auto& [name, n] : specs) { x.EnemyTotal += n; }
 				x.TopSpecCount = specs.count(x.TopSpec) ? specs[x.TopSpec] : 0;
-				// by team: two enemy teams at once are told apart (the user, 2026-10-05)
+				// by team: two enemy teams at once are told apart
 				for (const EnemyTeam& t : EnemyTeams(f))
 				{
 					Facts::TeamComp tc{t.Team, t.Players, {}};
@@ -1396,10 +1357,10 @@ namespace Ui
 		}
 
 		// The round strip: ally damage to enemy players per second above the line, enemy damage below, spikes shaded in
-		// their side's half. Downs in a spike sit in lanes of their own, never over the bars (the user, 2026-10-05: the
-		// numbers on the bars couldn't be read): a triangle up and the count above (enemies downed in an ally spike), a
-		// triangle down and the count below (allies downed in an enemy spike). You: x died, a white triangle downed.
-		// Hover: the spike under the mouse, the top half the ally one and the bottom half the enemy one; a click opens it.
+		// their side's half. Downs in a spike sit in lanes of their own, never over the bars: a triangle up and the count
+		// above (enemies downed in an ally spike), a triangle down and the count below (allies downed in an enemy spike).
+		// You: x died, a white triangle downed. Hover: the spike under the mouse, the top half the ally one and the bottom
+		// half the enemy one; a click opens it.
 		void Strip(const Facts& x, const Fight& f, const Player* aMe, ImVec2 p, float w, float h, bool aShadow, bool aSmall)
 		{
 			ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1680,7 +1641,7 @@ namespace Ui
 		};
 		bool hov = false;
 
-		// ---- the round: the result, the strip, three reasons ---------------------------------------------------------
+		// ---- the round: the result, the strip, CC both ways -------------------------------------------------------------
 		Part round{y, s.Shown == P_Round && s.SpikeOpen < 0};
 		y += pad;
 		label("ROUND", x.Length + " \xc2\xb7 " + x.Players);
@@ -1700,14 +1661,47 @@ namespace Ui
 		for (const Reason& r : x.Reasons) { ReasonLine(L, ImVec2(x0, y), r, false); y += lh + 2; }
 		close(round);
 
+		// ---- why it was lost or won: the two factors furthest from how won fights look -----
+		{
+			std::vector<StruggleWhy> why;
+			const int res = StruggleTop(c, why);
+			if (!why.empty())
+			{
+				Part part{y, s.Shown == P_Struggle};
+				y += pad;
+				const std::string tonight = "tonight >";
+				Txt(dl, ImVec2(x0, y), muted, res < 0 ? "WHY IT WAS LOST" : "WHY IT WAS WON", false, SmallSize());
+				ImGui::SetCursorScreenPos(ImVec2(x0 + w - TextW(tonight, SmallSize()), y));
+				if (ImGui::InvisibleButton("whytonight", ImVec2(TextW(tonight, SmallSize()), lh))) { Go(P_Struggle); s.StruggleNight = true; }
+				Txt(dl, ImVec2(x0 + w - TextW(tonight, SmallSize()), y), ImGui::IsItemHovered() ? ink : kYou, tonight, false, SmallSize());
+				y += lh;
+				if (row("why", (lh + 2) * why.size(), &hov)) { Go(P_Struggle); s.StruggleNight = false; }
+				if (hov) { TipWrapped(res < 0 ? "What cost the most players.\nClick: the whole view" : "Where this round beat a won fight its size.\nClick: the whole view"); }
+				for (const StruggleWhy& k : why)
+				{
+					Mark(dl, ImVec2(x0 + lh * 0.35f, y + lh * 0.5f), lh * 0.28f, k.Verdict == 0 ? 1 : 2, k.Verdict == 0 ? kYou : k.Verdict == 1 ? kMid : kEnemy);
+					StruggleIconAt(dl, ImVec2(x0 + lh * 0.9f, y), lh, k.Factor);
+					Txt(dl, ImVec2(x0 + lh * 2.2f, y), ink, k.Label, false);
+					Txt(dl, ImVec2(x0 + lh * 2.2f + TextW(k.Label, ImGui::GetFontSize()) + lh * 0.5f, y), muted, k.Value, false);
+					y += lh + 2;
+				}
+				close(part);
+			}
+		}
+
 		// ---- you: your down as steps, your rank on your spec ---------------------------------------------------------
 		Part you{y, (s.Shown == P_Down && !x.DeathKey.empty() && s.DeathKey == x.DeathKey) || s.Shown == P_You};
 		y += pad;
+		// every way into You from here opens its overview for this round, not the measure or fix opened there last
+		auto openYou = [&]() { Go(P_You); s.YouTonight = false; s.Measure = -1; s.Skill = kNoSkill; s.OpenFix = -1; };
+		// the title opens You
+		if (row("youtitle", lh, &hov)) { openYou(); }
+		if (hov) { ImGui::SetTooltip("Click: you against your spec, this round"); }
 		label("YOU", c.MeRaw ? c.MeRaw->Name + " \xc2\xb7 " + c.MeRaw->Spec + " \xc2\xb7 sg " + std::to_string(c.MeRaw->Subgroup) : std::string());
 		if (row("youhead", lh, &hov))
 		{
 			if (x.WentDown) { Go(P_Down); s.DeathKey = x.DeathKey; s.DeathFilter = 1; s.DeathSpike = -1; }
-			else { Go(P_You); s.YouTonight = false; }
+			else { openYou(); }
 		}
 		if (hov && x.WentDown) { TipDown(x, f); }
 		else if (hov && x.HasYou) { TipHits(x, f); }
@@ -1756,7 +1750,7 @@ namespace Ui
 					aTip();
 				}
 				if (clicked && x.WentDown) { Go(P_Down); s.DeathKey = x.DeathKey; s.DeathFilter = 1; s.DeathSpike = -1; }
-				else if (clicked) { Go(P_You); s.YouTonight = false; }
+				else if (clicked) { openYou(); }
 				aIcon(ImVec2(sx, y));
 				Txt(dl, ImVec2(sx + lh + 4, y), ink, aText, false);
 				if (!aWhen.empty()) { Txt(dl, ImVec2(sx + lh + 4 + TextW(aText) + lh * 0.4f, y + lh * 0.1f), muted, aWhen, false, SmallSize()); }
@@ -1805,18 +1799,80 @@ namespace Ui
 		if (x.HasYou)
 		{
 			// the line opens You (why), its "compare >" opens Compare: you against the best on your spec, anyone else
-			// picked there (the user, 2026-10-05: Compare had no way in for yourself)
+			// picked there
 			bool clicked = row("rank", lh, &hov);
 			const float mx = ImGui::GetIO().MousePos.x, cmpX = CompareLinkX(x0 + w), whyX = WhyLinkX(x0 + w);
 			const bool onCompare = hov && mx >= cmpX - 2 && mx < whyX - lh * 0.3f;
 			if (clicked && onCompare) { Go(P_Compare); s.CompareLeft.clear(); s.CompareRight.clear(); s.Metric = -1; s.CompareTonight = false; }
-			else if (clicked) { Go(P_You); s.YouTonight = false; s.OpenFix = x.Next.HasFix ? 0 : -1; }
+			else if (clicked) { openYou(); }
 			if (onCompare) { TipWrapped("Compare: you against the best on your spec, skill by skill on your main measure; pick anyone else and any measure there"); }
 			else if (hov) { TipRank(x, c); }
 			RankLine(L, ImVec2(x0, y), true, onCompare ? 1 : hov && mx >= whyX - 2 ? 2 : 0);
 			y += lh + 2;
 		}
 		close(you);
+
+		// ---- the calls: every one, a click opens who and when --------------------------------------------------------
+		const std::vector<CallCard>& calls = RoundCalls(f);
+		Part callsPart{y, s.Shown == P_Calls};
+		y += pad;
+		{
+			int n[3] = {0, 0, 0};
+			for (const CallCard& k : calls) { n[std::clamp(k.Kind, 0, 2)]++; }
+			std::string right = std::to_string(n[0]) + " on \xc2\xb7 " + std::to_string(n[1]) + " partly \xc2\xb7 " + std::to_string(n[2]) + " off";
+			if (row("callslabel", lh, &hov)) { Go(P_Calls); }
+			if (hov) { ImGui::SetTooltip("Each key skill your squad brought, judged by its own rule.\nClick: every call, who and when"); }
+			label("CALLS", calls.empty() ? std::string() : right);
+		}
+		if (calls.empty())
+		{
+			Txt(dl, ImVec2(x0, y), muted, "No key skills (wells, bursts, Tale, stability...) this round", false);
+			y += lh;
+		}
+		else
+		{
+			// the chips, off first: a mark, the name, the verdict when it isn't on, the count
+			std::vector<const CallCard*> order;
+			for (const CallCard& k : calls) { order.push_back(&k); }
+			std::stable_sort(order.begin(), order.end(), [](const CallCard* a, const CallCard* b) { return a->Kind > b->Kind; });
+			auto shortName = [](const std::string& aName)
+			{
+				if (aName == "Tale of the August Queen") { return std::string("Tale"); }
+				if (aName == "Winds of Disenchantment") { return std::string("Winds"); }
+				if (aName == "Chronomancer burst") { return std::string("Chrono burst"); }
+				if (aName == "Necromancer burst") { return std::string("Necro burst"); }
+				if (aName == "Elementalist burst") { return std::string("Ele burst"); }
+				if (aName == "Continuum Split") { return std::string("Continuum"); }
+				return aName;
+			};
+			float cx = x0;
+			const float ch = lh + 4;
+			for (const CallCard* k : order)
+			{
+				std::string name = shortName(k->Name), verdict = k->Kind ? k->Verdict : std::string(), count = std::to_string(k->Num) + "/" + std::to_string(k->Den);
+				float cw = lh * 0.9f + TextW(name) + (verdict.empty() ? 0 : lh * 0.35f + TextW(verdict, SmallSize())) + lh * 0.35f + TextW(count, SmallSize()) + lh * 0.6f;
+				if (cx + cw > x0 + w && cx > x0) { cx = x0; y += ch + 3; }
+				ImGui::SetCursorScreenPos(ImVec2(cx, y));
+				ImGui::PushID(k->Key.c_str());
+				bool clicked = ImGui::InvisibleButton("##call", ImVec2(cw, ch));
+				bool h2 = ImGui::IsItemHovered();
+				ImGui::PopID();
+				dl->AddRectFilled(ImVec2(cx, y), ImVec2(cx + cw, y + ch), h2 ? kHoverBg : IM_COL32(0x18, 0x1b, 0x20, 255));
+				dl->AddRect(ImVec2(cx, y), ImVec2(cx + cw, y + ch), s.Shown == P_Calls && s.CallOpen == k->Key ? kYou : IM_COL32(0x2c, 0x31, 0x3a, 255));
+				float tx = cx + lh * 0.3f;
+				Verdict(dl, ImVec2(tx + lh * 0.25f, y + ch * 0.5f), lh * 0.24f, std::clamp(k->Kind, 0, 2));
+				tx += lh * 0.6f;
+				Txt(dl, ImVec2(tx, y + 2), ink, name, false);
+				tx += TextW(name) + lh * 0.35f;
+				if (!verdict.empty()) { Txt(dl, ImVec2(tx, y + 2 + lh * 0.08f), muted, verdict, false, SmallSize()); tx += TextW(verdict, SmallSize()) + lh * 0.35f; }
+				Txt(dl, ImVec2(tx, y + 2 + lh * 0.08f), ImGui::GetColorU32(ImGuiCol_TextDisabled), count, false, SmallSize());
+				if (h2) { TipCall(*k); }
+				if (clicked) { Go(P_Calls); s.CallOpen = k->Key; }
+				cx += cw + 3;
+			}
+			y += ch;
+		}
+		close(callsPart);
 
 		// ---- downs: the squad as the game's squad window, a row per subgroup -----------------------------------------
 		Part downs{y, s.Shown == P_Downs || (s.Shown == P_Down && s.DeathKey != x.DeathKey) || s.Shown == P_Revives};
@@ -1870,7 +1926,7 @@ namespace Ui
 							for (const DownInfo& e : it->second) { if (e.Died) { d = &e; } }
 							Go(P_Down);
 							s.DeathKey = d->Key;
-							// Earlier and Later step through this player's downs (the user, 2026-10-05)
+							// Earlier and Later step through this player's downs
 							s.DeathFilter = 5;
 							s.DeathPlayer = p->Account;
 							s.DeathSpike = -1;
@@ -2081,68 +2137,6 @@ namespace Ui
 			y += ((x.Bests.size() + 1) / 2) * (lh + 2);
 		}
 		close(best);
-
-		// ---- the calls: every one, a click opens who and when --------------------------------------------------------
-		const std::vector<CallCard>& calls = RoundCalls(f);
-		Part callsPart{y, s.Shown == P_Calls};
-		y += pad;
-		{
-			int n[3] = {0, 0, 0};
-			for (const CallCard& k : calls) { n[std::clamp(k.Kind, 0, 2)]++; }
-			std::string right = std::to_string(n[0]) + " on \xc2\xb7 " + std::to_string(n[1]) + " partly \xc2\xb7 " + std::to_string(n[2]) + " off";
-			if (row("callslabel", lh, &hov)) { Go(P_Calls); }
-			if (hov) { ImGui::SetTooltip("Each key skill your squad brought, judged by its own rule.\nClick: every call, who and when"); }
-			label("CALLS", calls.empty() ? std::string() : right);
-		}
-		if (calls.empty())
-		{
-			Txt(dl, ImVec2(x0, y), muted, "No key skills (wells, bursts, Tale, stability...) this round", false);
-			y += lh;
-		}
-		else
-		{
-			// the chips, off first: a mark, the name, the verdict when it isn't on, the count
-			std::vector<const CallCard*> order;
-			for (const CallCard& k : calls) { order.push_back(&k); }
-			std::stable_sort(order.begin(), order.end(), [](const CallCard* a, const CallCard* b) { return a->Kind > b->Kind; });
-			auto shortName = [](const std::string& aName)
-			{
-				if (aName == "Tale of the August Queen") { return std::string("Tale"); }
-				if (aName == "Winds of Disenchantment") { return std::string("Winds"); }
-				if (aName == "Chronomancer burst") { return std::string("Chrono burst"); }
-				if (aName == "Necromancer burst") { return std::string("Necro burst"); }
-				if (aName == "Elementalist burst") { return std::string("Ele burst"); }
-				if (aName == "Continuum Split") { return std::string("Continuum"); }
-				return aName;
-			};
-			float cx = x0;
-			const float ch = lh + 4;
-			for (const CallCard* k : order)
-			{
-				std::string name = shortName(k->Name), verdict = k->Kind ? k->Verdict : std::string(), count = std::to_string(k->Num) + "/" + std::to_string(k->Den);
-				float cw = lh * 0.9f + TextW(name) + (verdict.empty() ? 0 : lh * 0.35f + TextW(verdict, SmallSize())) + lh * 0.35f + TextW(count, SmallSize()) + lh * 0.6f;
-				if (cx + cw > x0 + w && cx > x0) { cx = x0; y += ch + 3; }
-				ImGui::SetCursorScreenPos(ImVec2(cx, y));
-				ImGui::PushID(k->Key.c_str());
-				bool clicked = ImGui::InvisibleButton("##call", ImVec2(cw, ch));
-				bool h2 = ImGui::IsItemHovered();
-				ImGui::PopID();
-				dl->AddRectFilled(ImVec2(cx, y), ImVec2(cx + cw, y + ch), h2 ? kHoverBg : IM_COL32(0x18, 0x1b, 0x20, 255));
-				dl->AddRect(ImVec2(cx, y), ImVec2(cx + cw, y + ch), s.Shown == P_Calls && s.CallOpen == k->Key ? kYou : IM_COL32(0x2c, 0x31, 0x3a, 255));
-				float tx = cx + lh * 0.3f;
-				Verdict(dl, ImVec2(tx + lh * 0.25f, y + ch * 0.5f), lh * 0.24f, std::clamp(k->Kind, 0, 2));
-				tx += lh * 0.6f;
-				Txt(dl, ImVec2(tx, y + 2), ink, name, false);
-				tx += TextW(name) + lh * 0.35f;
-				if (!verdict.empty()) { Txt(dl, ImVec2(tx, y + 2 + lh * 0.08f), muted, verdict, false, SmallSize()); tx += TextW(verdict, SmallSize()) + lh * 0.35f; }
-				Txt(dl, ImVec2(tx, y + 2 + lh * 0.08f), ImGui::GetColorU32(ImGuiCol_TextDisabled), count, false, SmallSize());
-				if (h2) { TipCall(*k); }
-				if (clicked) { Go(P_Calls); s.CallOpen = k->Key; }
-				cx += cw + 3;
-			}
-			y += ch;
-		}
-		close(callsPart);
 		dl->ChannelsMerge();
 		ImGui::SetCursorScreenPos(o);
 		ImGui::Dummy(ImVec2(W, y - o.y));
@@ -2203,7 +2197,7 @@ namespace Ui
 				std::string head = "You " + Duration(x.DownMs);
 				Txt(dl, ImVec2(cx, y), ink, head, aShadow);
 				cx += TextW(head) + lh * 0.5f;
-				// the steps as icons with arrows (the user, 2026-10-05), their words on hover
+				// the steps as icons with arrows, their words on hover
 				std::vector<ChainStep> steps;
 				if (x.StabStep)
 				{
@@ -2243,17 +2237,26 @@ namespace Ui
 		}
 		if ((aLines & (1u << ML_Rank)) && x.HasYou)
 		{
-			if (row("rank")) { open(P_You); s.YouTonight = false; s.OpenFix = x.Next.HasFix ? 0 : -1; }
+			if (row("rank")) { open(P_You); s.YouTonight = false; s.Measure = -1; s.Skill = kNoSkill; s.OpenFix = -1; } // You's overview, as the big window
 			if (hov) { TipRank(x, c); }
 			RankLine(L, ImVec2(o.x, y), false);
 			y += lh + 1;
 		}
-		if ((aLines & (1u << ML_Why)) && !x.Reasons.empty())
+		if (aLines & (1u << ML_Why))
 		{
-			if (row("why")) { open(P_Round); s.SpikeOpen = -1; s.RoundView = 0; }
-			if (hov) { TipReasons(x); }
-			ReasonLine(L, ImVec2(o.x, y), x.Reasons[0], true);
-			y += lh + 1;
+			// the round's top cause, as the big window's "why it was lost / won"
+			std::vector<StruggleWhy> why;
+			const int res = StruggleTop(c, why);
+			if (!why.empty())
+			{
+				if (row("why")) { open(P_Struggle); s.StruggleNight = false; }
+				if (hov) { TipWrapped(res < 0 ? "What cost the most players.\nClick: why this round was lost" : "Where this round beat a won fight its size.\nClick: why this round was won"); }
+				Reason r;
+				r.Kind = res < 0 ? 2 : 0;
+				r.Short = why[0].Label + ": " + why[0].Value;
+				ReasonLine(L, ImVec2(o.x, y), r, true);
+				y += lh + 1;
+			}
 		}
 		if (aLines & (1u << ML_Downs))
 		{
@@ -2333,14 +2336,21 @@ namespace Ui
 	{
 		struct Row { const char* Part; const char* Text; };
 		static const Row kRows[] = {
-			{"Round", "The result (enemies downed : allies downed), the strip and three reasons. The strip: ally damage to enemy players per "
+			{"Round", "The result (enemies downed : allies downed), the strip and CC both ways. The strip: ally damage to enemy players per "
 				"second above the line, enemy damage below; shaded: spikes; a triangle up and a number above: enemies downed in that ally "
 				"spike, a triangle down below: allies downed in that enemy spike; x you died, a white triangle: you were downed. Hover a "
 				"spike for who went down and both sides' top three skills, click it for the spike broken down: the upper half opens the ally "
-				"spike, the lower half the enemy one. The reasons: this round against the middle of tonight's rounds."},
+				"spike, the lower half the enemy one. Below it: how much enemy CC stability blocked on allies, how much ally CC landed, "
+				"against the middle of tonight's rounds, until allies stopped fighting (lost: the worse first; won: the better)."},
+			{"Why it was lost / won", "Lost: the two causes that cost the most players against won fights of this size (15v15 to "
+				"40v40+), with the count. Won: how many downed allies and enemies died. Click for the whole why view: every cause, this "
+				"round against won fights, who."},
 			{"You", "Your down as steps: hover each for what took your stability, what CC'd you and what hit you; click for the whole of "
 				"it. Your rank: your spec's main measure against the others on your spec. why >: your measures and what to fix first; "
 				"compare >: you against the best on your spec, skill by skill (pick anyone else there)."},
+			{"Calls", "Each key skill your squad brought, judged by its own rule (wells together, bursts with the wells, Winds one or two "
+				"per spike...). Hover for the count and who was off, click for who and when. Skills as icons: struck through in red, left "
+				"out; in grey, down or on cooldown; a gold frame, off time; hover an icon for its name and when."},
 			{"Downs", "The squad as the game's squad window: a row per subgroup (the gold diamond: the commander's). x died, a triangle: "
 				"downed (and how often); faded: not downed. Hover a player for what happened; click for their down (Earlier and Later "
 				"step through their downs), or to compare them when they weren't downed. Every player: all players >, a name opens Compare."},
@@ -2348,9 +2358,6 @@ namespace Ui
 				"skills, and the class that did most of the enemy spike damage."},
 			{"Best this round", "The best of the squad in each job; hover for how they got there, click to compare them with the next best "
 				"on their spec."},
-			{"Calls", "Each key skill your squad brought, judged by its own rule (wells together, bursts with the wells, Winds one or two "
-				"per spike...). Hover for the count and who was off, click for who and when. Skills as icons: struck through in red, left "
-				"out; in grey, down or on cooldown; a gold frame, off time; hover an icon for its name and when."},
 			{"The right side", "Whatever you click opens here; Back returns to what was open before. Night: your night, the fixes that "
 				"keep coming back."}};
 		if (ImGui::BeginTable("help", 2, ImGuiTableFlags_SizingFixedFit))
@@ -2373,8 +2380,8 @@ namespace Ui
 		}
 	}
 
-	// The calls (the Summary's cards, the user's pick A3 with A2's detail in place, 2026-10-04): a card per key skill
-	// this squad brought, judged by its own rule; a card opens who and when right under its row of cards
+	// The calls (the Summary's cards, picked by hand A3 with A2's detail in place): a card per key skill this squad
+	// brought, judged by its own rule; a card opens who and when right under its row of cards
 	void CallsView(const Ctx& c)
 	{
 		State& s = S();
@@ -2399,7 +2406,7 @@ namespace Ui
 
 		// who and when for one card: its whole line, then its rows, under a heading per part (a Warrior's opener and
 		// melee burst) and a labelled divider per spike or call, so rows of different spikes don't run together. How the
-		// rows are judged is the head's hover, a part's its heading's (the user, 2026-10-05: no explanation under them).
+		// rows are judged is the head's hover, a part's its heading's.
 		auto detail = [&](const CallCard& k)
 		{
 			const float aX = at.x, aW = width;
@@ -2411,7 +2418,7 @@ namespace Ui
 			if (!k.Detail.empty() && ImGui::IsMouseHoveringRect(ImVec2(aX + 6, y), ImVec2(aX + aW - 6, y + headH))) { TipWrapped(k.Detail); }
 			y += headH + 6;
 			// a table card (Tale, stability): a heading per column with its rule on hover, numbers right-aligned, each cell's
-			// story on its hover (the user, 2026-10-06: the rows were sentences, the stability rows only names)
+			// story on its hover
 			if (!k.Head.empty())
 			{
 				const size_t nc = k.Head.size();
@@ -2549,7 +2556,7 @@ namespace Ui
 				dl->PushClipRect(ImVec2(cWho, y), ImVec2(cSkill - 6, y + lh), true);
 				dl->AddText(ImVec2(cWho, y), ink, r.Who.c_str());
 				dl->PopClipRect();
-				// a burst's player: their skills around the call, on hover (the user, 2026-10-04)
+				// a burst's player: their skills around the call, on hover
 				if (r.By && ImGui::IsMouseHoveringRect(ImVec2(cWho, y), ImVec2(cSkill - 6, y + lh)))
 				{
 					std::map<int32_t, std::pair<int, double>> bySkill; // skill -> hits, damage
@@ -2650,9 +2657,12 @@ namespace Ui
 				}
 				else
 				{
-					// wraps (a list of missed spikes can be long)
-					dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(cWhat, y), r.Good ? ink : kEnemy, r.What.c_str(), nullptr, aX + aW - cWhat - 8);
-					y += ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, aX + aW - cWhat - 8, r.What.c_str()).y - lh;
+					// the row's skills as icons first (a burst away from any call), then the text, which wraps (a list of missed
+					// spikes can be long)
+					float tx = cWhat;
+					if (!r.Chain.empty()) { tx = cWhat + ChainAt(dl, ImVec2(cWhat, y), lh, r.Chain) + 8; }
+					dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(tx, y), r.Good ? ink : kEnemy, r.What.c_str(), nullptr, aX + aW - tx - 8);
+					y += ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, aX + aW - tx - 8, r.What.c_str()).y - lh;
 				}
 				y += lh + 2;
 			}

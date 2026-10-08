@@ -21,8 +21,8 @@ namespace Session
 		bool                  Loading = true; // the logs on disk at start aren't all read yet
 	};
 
-	// A path as UTF-8 text, for the screen and the log; never throws (path::string() throws on characters outside
-	// the Windows ANSI code page, a Polish or Cyrillic folder name on a Western Windows)
+	// A path as UTF-8 text, for the screen and the log; never throws (path::string throws on characters outside the
+	// Windows ANSI code page, a Polish or Cyrillic folder name on a Western Windows)
 	std::string PathText(const std::filesystem::path& aPath);
 
 	// At start the last play session loads: the newest log and every one before it back to a break of

@@ -3,9 +3,9 @@
 For each player-round (30 s+ alive): each job per second or minute alive, against that round's squad average (so a
 busy fight and a quiet one compare). A player-round's group = the job it did most against the squad (x1.5 at
 least), else "flexible". Per spec: how player-rounds split, and each group's top jobs. The groups are not separate
-builds (the user, 2026-09-24: players on a spec mostly run the same build; the spread is how they play it), so the
-output merges them into one job list per spec. src/SpecJobs.inc was first written from this; since the user's pass
-(2026-09-24) it is kept by hand and this script only prints the audit. Needs build/release/frcheck.exe; its output is cached in
+builds (players on a spec mostly run the same build; the spread is how they play it), so the
+output merges them into one job list per spec. src/SpecJobs.inc was first written from this; since a pass by hand it
+is kept by hand and this script only prints the audit. Needs build/release/frcheck.exe; its output is cached in
 build/frcache. No player names in the output.
 
 Usage:
@@ -91,5 +91,5 @@ for spec in sorted(rows, key=lambda s: -len(rows[s])):
     if builds:
         builds_out[spec] = builds
 
-# src/SpecJobs.inc is kept by hand since the user's pass (2026-09-24, notes/SPEC_JOBS_PASS.md, local): this script only prints
+# src/SpecJobs.inc is kept by hand since a pass by hand (notes/SPEC_JOBS_PASS.md, local): this script only prints
 # the audit above to check it against.

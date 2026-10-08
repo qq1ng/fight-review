@@ -28,14 +28,14 @@ namespace Ui
 	extern const ImU32 kYou, kPeer, kPeerTick, kEnemy, kTrack, kLaneBg, kOurBand, kEnemyBand, kEnemyPre;
 
 	enum Tab { T_Summary, T_You, T_Deaths, T_Compare, T_Round, T_Squad, T_TabCount };
-	// What the window's right side shows (the v10 design, the user's pick 2026-10-04: the debrief at the left answers the
+	// What the window's right side shows (the v10 design: the debrief at the left answers the
 	// six questions, a click opens the detail at the right). The old tabs are panes here; SwitchTo's tabs map onto them.
-	enum Pane { P_Home, P_Down, P_Downs, P_Revives, P_Round, P_You, P_Night, P_Compare, P_Squad, P_Calls, P_Help, P_Count };
-	// The small window's lines (the user, 2026-10-04: 250 x 250 at most; each player picks the lines they read)
+	enum Pane { P_Home, P_Down, P_Downs, P_Revives, P_Round, P_You, P_Night, P_Compare, P_Squad, P_Calls, P_Help, P_Struggle, P_Count };
+	// The small window's lines
 	enum MiniLine { ML_You, ML_Rank, ML_Why, ML_Downs, ML_Enemy, ML_Best, ML_Calls, ML_Count };
 	enum Role { R_Heal, R_Stab, R_Damage, R_Strip };
-	// A common build of a spec, from an audit of the user's logs (src/SpecJobs.inc)
-	// A row of a spec's main jobs (src/SpecJobs.inc): appended when When holds for the player ("" = always)
+	// A common build of a spec, from an audit of the logs (src/SpecJobs.inc). A row of a spec's main jobs
+	// (src/SpecJobs.inc): appended when When holds for the player ("" = always)
 	struct SpecJobs { const char* Spec; const char* When; std::vector<const char*> Jobs; };
 	constexpr int32_t kNoSkill = INT32_MIN;
 
@@ -47,11 +47,12 @@ namespace Ui
 		bool        YouTonight = false;     // You: the night (fixes that keep coming back) instead of this round
 		bool        CompareTonight = false; // Compare and Squad: every round loaded, added up
 		bool        SquadTonight = false;
+		bool        StruggleNight = false;  // why it was lost or won: tonight's rounds instead of this one
 		std::string VsAccount;          // "" = the best on your spec
 		int         SwitchTo = -1;      // a tab to select next frame (mapped onto a View)
 		// The window's right side: the pane shown, and the way back (Back pops it). A step keeps what decides the pane.
 		int         Shown = P_Home;
-		struct Step { int Shown = P_Home; int64_t SpikeOpen = -1; bool SpikeEnemy = false; std::string DeathKey; int DeathFilter = 0; int RoundView = 0; std::string DeathPlayer; };
+		struct Step { int Shown = P_Home; int64_t SpikeOpen = -1; bool SpikeEnemy = false; std::string DeathKey; int DeathFilter = 0; int RoundView = 0; std::string DeathPlayer; int DeathCause = -1; };
 		std::vector<Step> Back;
 		bool        KeepPane = false;   // the small window opened the window at a pane: a round that came meanwhile doesn't reset it
 		// Review: breadcrumb level and the open fix line
@@ -84,9 +85,10 @@ namespace Ui
 		std::string SpikeStamp;         // the round it belongs to
 		// Deaths
 		std::string DeathKey;           // the down shown: round/account/ms, "" = the first that fits the filter
-		int         DeathFilter = 0;    // 0 everyone, 1 you, 2 your subgroup, 3 revives, 4 one enemy spike (DeathSpike), 5 one player (DeathPlayer)
+		int         DeathFilter = 0;    // 0 everyone, 1 you, 2 your subgroup, 3 revives, 4 one enemy spike (DeathSpike), 5 one player (DeathPlayer), 6 one cause (DeathCause)
 		std::string DeathPlayer;        // the player of filter 5, by account (a click in the squad grid: their downs, earlier and later)
 		int64_t     DeathSpike = -1;    // an enemy spike opened from the Round tab: its downs first
+		int         DeathCause = -1;    // the cause of filter 6 (Causes::Factor): the downs the why view counted for it
 	};
 	State& S();
 	// Open a pane at the right, remembering the current one for Back (a click in the debrief, the small window, a link)
@@ -111,9 +113,8 @@ namespace Ui
 	const std::vector<Metric>& Metrics();
 	constexpr int kMetricHeal = 0, kMetricBarrier = 1, kMetricDamage = 2, kMetricDamageAll = 3, kMetricStrips = 4,
 		kMetricCleanses = 5, kMetricGroupBoon = 6; // + boon index
-	// One round: healing, damage, cleanses and strips as the round's totals (what ArcDPS and Healing Stats show; the
-	// user, 2026-09-27: per minute made a short round's numbers look off). Several rounds: per second or per minute.
-	// Boons are always stacks or % uptime.
+	// One round: healing, damage, cleanses and strips as the round's totals (what ArcDPS and Healing Stats show).
+	// Several rounds: per second or per minute. Boons are always stacks or % uptime.
 	bool Totals(const Player& p);
 	const char* RateUnit(const Metric& m, const Player& p); // "" for a total
 	double Rate(const Metric& m, const Player& p, double aValue);
@@ -174,12 +175,11 @@ namespace Ui
 	double GroupGenOver(const std::vector<FightPtr>& aFights, const std::string& aAccount, const std::string& aSpec, int aBoon);
 	Role RoleOf(const Player& p);
 	int CastsCutShort(const Player& p);
-	// A spike's window: from 3 s before its peak (the build-up: downs there were counted outside it, the user's 20:18
-	// on 25 Sept) to 4 s after. On 110 held-out rounds, 1 s before caught 73% of our downs in an enemy spike, 3 s 86%,
-	// with a spike that led to a down 59% -> 66% of the time; 4 s before adds little (the rate there is near the
-	// baseline). The same holds for enemy downs in our spikes (68% -> 78%).
-	// A spike is a run of seconds now (Analysis Spikes, 2026-10-06): the window runs from 2.5 s before the run's start to
-	// 3.5 s after its end, the same as before for a one-second spike.
+	// A spike's window: from 3 s before its peak (the build-up: downs there were counted outside it, a 20:18 on 25 Sept)
+	// to 4 s after. On 110 held-out rounds, 1 s before caught 73% of our downs in an enemy spike, 3 s 86%, with a spike
+	// that led to a down 59% -> 66% of the time; 4 s before adds little (the rate there is near the baseline). The same
+	// holds for enemy downs in our spikes (68% -> 78%). A spike is a run of seconds now (Analysis Spikes): the window
+	// runs from 2.5 s before the run's start to 3.5 s after its end, the same as before for a one-second spike.
 	constexpr int64_t kSpikeBeforeMs = 3000, kSpikeAfterMs = 4000;
 	// The spike (its peak, ms) a moment belongs to, ours or theirs: the nearest whose window holds it; -1 none
 	int64_t SpikeOf(const Fight& f, bool aOurs, int64_t aMs);
@@ -189,6 +189,8 @@ namespace Ui
 	// window for a one-second spike. aAtStart: both ends against the run's start instead (what came before a spike, or
 	// early in it, shouldn't stretch over a 12 s one)
 	std::pair<int64_t, int64_t> SpikeWindow(const Fight& f, bool aOurs, int64_t aPeak, int64_t aBefore, int64_t aAfter, bool aAtStart = false);
+	// How a spike is named: "at 0:11", or a long one (4 s or more) by its run, "0:02-0:14, peak 0:11"
+	std::string SpikeWhen(const Fight& f, bool aOurs, int64_t aPeak);
 	// In the window (as above) of any spike of that side
 	bool InSpike(const Fight& f, bool aOurs, int64_t aMs, int64_t aBefore, int64_t aAfter, bool aAtStart = false);
 	// One use of invulnerability by one of ours: the gives of one player within 0.3 s (Tale of the August Queen puts
@@ -251,16 +253,16 @@ namespace Ui
 	// ---- drawing ---------------------------------------------------------------------------------------------------
 	void SpecIcon(const Player& p);
 	void SpecIconAt(ImDrawList* dl, ImVec2 aPos, float aSize, const Player& p); // the class icon at a position
+	Player SpecPlayer(const std::string& aSpec); // an enemy's spec as a Player, for SpecIconAt
 	void SkillIcon(int32_t aSkill, const std::string& aName);
 	// A skill's icon at a position, or a box with its first letter while it loads (or in the render harness)
 	void IconAt(ImDrawList* dl, ImVec2 aPos, float aSize, int32_t aSkill, const std::string& aName, ImU32 aFrame = 0);
 	// The game's icon for a CC type or a boon (outlined in red when aStruck: stripped or corrupted), else a lettered box
 	void CcIconAt(ImDrawList* dl, ImVec2 aPos, float aSize, Analysis::CcKind aKind);
 	void BoonIconAt(ImDrawList* dl, ImVec2 aPos, float aSize, int aBoon, bool aStruck);
-	// A chain of actions as small icons with arrows between (the down's step cards made small; the user, 2026-10-05: a
-	// series of actions as icons, names on hover, not as text). A step: a skill, a CC type or a boon taken; how it went
-	// (done; done off time: a gold frame; missed: dimmed, struck through, a red frame; not expected then: dimmed, struck
-	// through in grey); a short value after it; its name and words on hover.
+	// A chain of actions as small icons with arrows between (the down's step cards made small). A step: a skill, a CC
+	// type or a boon taken; how it went (done; done off time: a gold frame; missed: dimmed, struck through, a red frame;
+	// not expected then: dimmed, struck through in grey); a short value after it; its name and words on hover.
 	float ChainWidth(float aSize, const std::vector<ChainStep>& aSteps, bool aArrows = true);
 	float ChainAt(ImDrawList* dl, ImVec2 aPos, float aSize, const std::vector<ChainStep>& aSteps, bool aArrows = true); // returns the width
 	const char* SkillDescription(int32_t aSkill, const std::string& aName); // the GW2 API's text, "" if unknown
@@ -276,8 +278,8 @@ namespace Ui
 	void ShapeKey(int aShape, ImU32 aColor, const char* aLabel);
 	void Answer(const std::string& aText);      // the line that states the answer
 	void TipWrapped(const std::string& aText);  // a tooltip of free text, wrapped at about 35 characters' width (never the screen's)
-	// The enemy teams that fought us this round (WvW: red, blue, green; the user, 2026-10-05: two teams at once are told
-	// apart), most players first: players, downed, killed and classes per team. One entry, Team -1, when the log doesn't say.
+	// The enemy teams that fought us this round (WvW: red, blue, green), most players first: players, downed, killed and
+	// classes per team. One entry, Team -1, when the log doesn't say.
 	struct EnemyTeam { int Team = -1; int Players = 0, Downed = 0, Killed = 0; std::map<std::string, int> Specs; };
 	std::vector<EnemyTeam> EnemyTeams(const Fight& f);
 	const char* TeamName(int aTeam); // Red, Blue, Green, or Unknown team
@@ -342,6 +344,16 @@ namespace Ui
 	float SmallWindow(const Ctx& c, float aWidth, unsigned aLines, bool aShadow, bool aStrip);
 	// The calls, each a card that opens who and when (the Summary's calls, now a pane of its own)
 	void CallsView(const Ctx& c);
+	// Why a round was lost or won, and why tonight went as it did (UiStruggle.cpp). StruggleTop: the round's result (1 won,
+	// -1 lost, 0 even or too short) and its two strongest factors (verdict: 0 fine, 1 a bit worse, 2 worse; the factor
+	// for StruggleIconAt; its few words; this round's value)
+	struct StruggleWhy { int Verdict = 0, Factor = -1; std::string Label, Value; };
+	int StruggleTop(const Ctx& c, std::vector<StruggleWhy>& aOut);
+	void StruggleIconAt(ImDrawList* dl, ImVec2 aPos, float aSize, int aFactor);
+	// The why view's causes of a down (Causes::Factor): did this down have it; the cause in a few words
+	bool StruggleDownHas(const Ctx& c, const Player& p, int32_t aMs, int aCause);
+	const char* StruggleCauseLabel(int aCause);
+	void StruggleView(const Ctx& c);
 	// How to read the debrief (the ? button): what each part shows
 	void HelpView();
 	// Your down that the debrief shows first (the one that killed you, else the last): its Deaths key, "" if none

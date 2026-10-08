@@ -1,0 +1,73 @@
+{
+ "topstats": {
+  "cleanses": {
+   "pairs": 591,
+   "exact": 591,
+   "within5": 591
+  },
+  "rips": {
+   "pairs": 591,
+   "exact": 590,
+   "within5": 591
+  },
+  "evades": {
+   "pairs": 591,
+   "exact": 591,
+   "within5": 591
+  },
+  "blocks": {
+   "pairs": 591,
+   "exact": 591,
+   "within5": 591
+  },
+  "invulns": {
+   "pairs": 591,
+   "exact": 562,
+   "within5": 578
+  },
+  "heal": {
+   "pairs": 384,
+   "exact": 246,
+   "within5": 350
+  },
+  "downed": {
+   "pairs": 591,
+   "exact": 591,
+   "within5": 591
+  },
+  "deaths": {
+   "pairs": 591,
+   "exact": 591,
+   "within5": 591
+  },
+  "receivedCrowdControl": {
+   "pairs": 591,
+   "exact": 591,
+   "within5": 591
+  },
+  "resOutTime": {
+   "pairs": 591,
+   "exact": 591,
+   "within5": 591
+  },
+  "appliedCrowdControl": {
+   "pairs": 591,
+   "exact": 590,
+   "within5": 590
+  },
+  "downContribution": {
+   "pairs": 591,
+   "exact": 405,
+   "within5": 473
+  },
+  "dodges": {
+   "pairs": 591,
+   "exact": 573,
+   "within5": 573
+  }
+ },
+ "casts": {
+  "rows": 283,
+  "exact": 177
+ }
+}

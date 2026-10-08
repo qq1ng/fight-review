@@ -1,4 +1,4 @@
-// Each spec's main jobs, most important first: the user's pass of 2026-09-24 (notes/SPEC_JOBS_PASS.md, local). Kept by hand;
+// Each spec's main jobs, most important first: a pass by hand (notes/SPEC_JOBS_PASS.md, local). Kept by hand;
 // tools/gen_spec_builds.py only prints the log audit to check it against.
 //
 // Rows are read top to bottom and their jobs appended (without repeats) when the row's condition holds for the
@@ -6,7 +6,7 @@
 //   ""              always
 //   "Ventari", "Mallyx", "Jalis", "not Ventari"   Revenant legends used ("Legendary ... Stance" buffs)
 //   "Wanderer's"    Firebrand damage at 0.4x the squad average or more (Minstrel's Firebrands stay under 0.31x,
-//                   Wanderer's over 0.46x: 67 player-evenings, 2026-09-24)
+//                   Wanderer's over 0.46x: 67 player-evenings)
 //   "damage build", "support build", "hybrid build"   Chronomancer: damage and stability or quickness against the
 //                   squad average, 1.5x or more (130 rounds: 93 support, 27 damage, 5 hybrid)
 //   "power", "support"   specs Snow Crows lists with both a power and a support build (reference/snowcrows,
@@ -99,8 +99,7 @@ const SpecJobs kSpecJobs[] = {
 	{"Chronomancer", "hybrid build", {ON_SUBGROUP("Stability"), ON_SUBGROUP("Quickness"), DAMAGE, CC}},
 	{"Mirage", "", {STRIPS, DAMAGE}},
 	{"Virtuoso", "", {DAMAGE}},
-	// Resistance: Singularity Shot always, Harmonious Harp only with Mental Defense (the user, 2026-09-29; the boon
-	// attribution learns per player whether their Harp gives it)
+	// Resistance: Singularity Shot always, Harmonious Harp only with Mental Defense
 	{"Troubadour", "", {ON_SUBGROUP("Stability"), ON_SUBGROUP("Quickness"), ON_SUBGROUP("Resistance"), BARRIER, HEALING, ON_SUBGROUP("Protection"), DISTORTION, NEGATED, ON_SUBGROUP("Vigor"), IN_OUR_SPIKE("Crescendo")}},
 	// Necromancer
 	{"Necromancer", "", {STRIPS, DAMAGE, IN_OUR_SPIKE("Well of Corruption"), IN_OUR_SPIKE("Nightfall")}},

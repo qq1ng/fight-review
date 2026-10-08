@@ -4,7 +4,7 @@ The report is the Legacy.json.gz next to a TopStats page (kept in data/, it hold
 matched to log files by end time, to the minute; players by account. TopStats writes -1 for "not in this
 fight", and for heal also "no Healing Stats data".
 
-TopStats sometimes read another player's log for a fight (the user is missing from some fights they recorded).
+TopStats sometimes read another player's log for a fight (the recorder is missing from some fights they recorded).
 Its squad then differs from ours, and boon generation, which divides by squad size, can't be compared. Those
 fights are left out of the boon rows.
 

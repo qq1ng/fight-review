@@ -32,7 +32,7 @@ namespace Analysis
 		constexpr int64_t kCastSlack = 250;   // attribution: an animated cast covers its animation plus this
 		constexpr int64_t kInstantSlack = 100; // and an instant cast this much either side
 		constexpr int64_t kBoonDelay = 750;    // some skills grant their boons this long after the cast
-		// Tuned with tools/spike_sweep.py (2026-09-24): trained on 56 rounds, checked on 110 others
+		// Tuned with tools/spike_sweep.py: trained on 56 rounds, checked on 110 others
 		constexpr double kSpikeOverMedian = 1.4, kSpikeOfMax = 0.5;
 		constexpr int64_t kIntoOurs = 2000, kAheadOfTheirs = 4000, kAnsweringTheirs = 3000;
 		constexpr uint32_t kResurrect = 1066;     // the plain revive: animation dst = the ally
@@ -56,11 +56,13 @@ namespace Analysis
 		const std::unordered_set<uint32_t> kConditions = {736, 737, 861, 723, 19426, 720, 722, 721, 791, 727, 26766,
 			27705, 742, 738};
 
+		// Not 10 (CBTR_DEFIANCE_DAMAGENORMAL): damage to a defiance bar, not to health (EI keeps it apart too). Logs from 2024
+		// carry it from NPCs onto players, with values that made 94% of the enemy damage in July 2024.
 		bool IsDamageResult(uint8_t aResult)
 		{
 			switch (aResult)
 			{
-			case 0: case 1: case 2: case 5: case 8: case 9: case 10: case 13: case 14: case 15: case 16: case 17: case 18:
+			case 0: case 1: case 2: case 5: case 8: case 9: case 13: case 14: case 15: case 16: case 17: case 18:
 				return true;
 			default:
 				return false;
@@ -74,9 +76,8 @@ namespace Analysis
 		}
 
 		// A spike: a run of seconds at or over the floor (1.4x the round's median busy second, or half its biggest, whichever
-		// is more), a 1 s dip bridged while it stays over the median; its peak the run's highest second (the user,
-		// 2026-10-06: the enemy's 12 s assault at 22:00 showed as three spikes, peaks 3 s apart). Scored against downs on
-		// 166 rounds (scratch merge_eval.py on data/spike_series_*.tsv): precision as before (ours 0.63, theirs 0.59),
+		// is more), a 1 s dip bridged while it stays over the median; its peak the run's highest second. Scored against downs
+		// on 166 rounds (scratch merge_eval.py on data/spike_series_*.tsv): precision as before (ours 0.63, theirs 0.59),
 		// recall 0.80 / 0.85 against 0.68 / 0.73; 3.8 / 4.1 a minute against 4.2 / 4.5; 2.6 s long on average
 		struct SpikeRun { int64_t Peak = 0; int32_t From = 0, To = 0; };
 		std::vector<SpikeRun> Spikes(const std::vector<int64_t>& aSeries)
@@ -115,9 +116,9 @@ namespace Analysis
 			return {std::min<int64_t>(aPeaks[i], aSpans[i].first + 500), std::max<int64_t>(aPeaks[i], aSpans[i].second - 500)};
 		}
 
-		// The timing classes, against each spike's run (2026-10-06; the same as against the peak for a one-second spike):
-		// into ours from 2 s before its run to 2 s after, ahead of theirs in the 4 s before its run starts, answering theirs
-		// from its start to 3 s after its end
+		// The timing classes, against each spike's run (the same as against the peak for a one-second spike): into ours from
+		// 2 s before its run to 2 s after, ahead of theirs in the 4 s before its run starts, answering theirs from its start
+		// to 3 s after its end
 		std::array<bool, T_Count> Classify(int64_t aT, const Fight& aFight)
 		{
 			std::array<bool, T_Count> c{};
@@ -269,13 +270,13 @@ namespace Analysis
 		// How long after a use ends a skill keeps giving each boon, in ms, beyond kBoonDelay (pulsing skills; learned)
 		using Reach = std::unordered_map<int32_t, std::array<int32_t, kBoons>>;
 
-		// Boons a skill doesn't give although the logs make it look so (it is used together with the real source, a
-		// trait or another skill): corrections the user made, which learning never overrides. Bit mask in kBoonNames order.
+		// Boons a skill doesn't give although the logs make it look so (it is used together with the real source, a trait
+		// or another skill): corrections made by hand, which learning never overrides. Bit mask in kBoonNames order.
 		uint32_t NotGiven(int32_t aSkill)
 		{
 			switch (aSkill)
 			{
-			case 10214: case 10215: return 1u << kStability; // Power Return (the user, 2026-09-25: it gives no stability)
+			case 10214: case 10215: return 1u << kStability; // Power Return
 			default: return 0;
 			}
 		}
@@ -285,7 +286,7 @@ namespace Analysis
 		{
 			switch (aSkill)
 			{
-			case 14412: return 1u << kStability | 1u << 9; // Balanced Stance: stability and swiftness, self (the user, 2026-09-28)
+			case 14412: return 1u << kStability | 1u << 9; // Balanced Stance: stability and swiftness, self
 			case 14413: return 1u << kStability;           // Dolyak Signet
 			default: return 0;
 			}
@@ -345,8 +346,8 @@ namespace Analysis
 		}
 
 		// Sources told apart by the duration they give: each has its own base duration, and a player's boon duration
-		// scales them all alike. The user named these (2026-09-24, from the in-game boon sources and traits); on
-		// 23 Sept one Firebrand gave stability at exactly 12, 10, 8, 6 and 4 s, the others at the same ratios.
+		// scales them all alike. Named by hand (from the in-game boon sources and traits); on 23 Sept one Firebrand
+		// gave stability at exactly 12, 10, 8, 6 and 4 s, the others at the same ratios.
 		struct DurationSource { const char* Spec; int Boon; int32_t BaseMs; int32_t Skill; const char* Name; };
 		const DurationSource kDurationSources[] = {
 			{"Firebrand", kStability, 12000, 9153, "\"Stand Your Ground!\""},
@@ -502,7 +503,10 @@ namespace Analysis
 			case SC_EnterCombat:
 				if (squad.count(e.Src)) { present.insert(e.Src); }
 				break;
-			case SC_SqCombatStart: start = std::min<int64_t>(start, e.Time); break;
+			case SC_SqCombatStart:
+				start = std::min<int64_t>(start, e.Time);
+				if (!f.ServerStart) { f.ServerStart = static_cast<uint32_t>(e.Value); }
+				break;
 			case SC_SqCombatEnd: end = std::max<int64_t>(end, e.Time); break;
 			case SC_PointOfView: pov = e.Src; break;
 			case SC_MapId: f.MapId = static_cast<uint32_t>(e.Src); break;
@@ -715,8 +719,15 @@ namespace Analysis
 		std::unordered_map<uint64_t, int64_t> lastFoeStabStrip; // enemy -> when we last removed all their stability
 		// what made an ally invulnerable, for the enemy hits it absorbed: Distortion (Tale of the August Queen, a Mesmer's
 		// own), or Determined and Resurrection, which come with going down and with a revive (5 Oct: 58% and 38% of the hits
-		// absorbed; the user, 2026-10-06: absorbed hits outside any Tale looked like invulnerability nobody used)
+		// absorbed)
 		std::unordered_map<uint64_t, int64_t> distortionUntil, downInvulnUntil;
+		// hard conditions on allies (immobilize, chill, cripple, fear): each stack from its application to its removal
+		static const std::unordered_set<uint32_t> kHardConds = {727, 722, 721, 791};
+		struct HardSpan { int P; uint32_t Skill; int32_t From, To; };
+		std::vector<HardSpan> hardSpans;
+		std::unordered_map<uint64_t, size_t> hardOpen; // stackKey(target, stack id) -> into hardSpans
+		std::vector<HardSpan> foeHardSpans;            // the same, put on enemies by allies (P: Enemies index)
+		std::unordered_map<uint64_t, size_t> foeHardOpen;
 		std::unordered_map<uint32_t, bool> downInvulnId;
 		auto isDownInvuln = [&](uint32_t aSkill)
 		{
@@ -811,7 +822,11 @@ namespace Analysis
 					else if (Player* by = !friends.count(e.Dst) ? player(owner(e.Src, e.SrcMaster)) : nullptr)
 					{
 						by->CcDealt++; // any hostile target, as TopStats counts it
-						if (foes.count(e.Dst)) { f.OurCcMs.push_back(rel(t)); }
+						if (foes.count(e.Dst))
+						{
+							f.OurCcMs.push_back(rel(t)); by->CcOutMs.push_back(rel(t));
+							f.Enemies[enemy(e.Dst)].CcIn.push_back({rel(t), static_cast<int>(by - f.Players.data())});
+						}
 					}
 				}
 				if (!IsDamageResult(e.Result)) { break; }
@@ -887,8 +902,31 @@ namespace Analysis
 				}
 				break;
 			}
+			case SC_StunBreak:
+				if (auto it = index.find(e.Src); it != index.end()) { f.StunBreaks.push_back({rel(t), it->second, -1, e.Value}); }
+				else if (foes.count(e.Src)) { f.StunBreaks.push_back({rel(t), -1, enemy(e.Src), e.Value}); }
+				break;
 			case SC_BuffRemoveAll:
 			{
+				if (kHardConds.count(e.Skill))
+				{
+					if (auto it = index.find(e.Src); it != index.end())
+					{
+						for (auto o = hardOpen.begin(); o != hardOpen.end();)
+						{
+							HardSpan& h = hardSpans[o->second];
+							if (h.P == it->second && h.Skill == e.Skill) { h.To = std::min(h.To, rel(t)); o = hardOpen.erase(o); } else { ++o; }
+						}
+					}
+					else if (auto en = enemyIndex.find(e.Src); en != enemyIndex.end())
+					{
+						for (auto o = foeHardOpen.begin(); o != foeHardOpen.end();)
+						{
+							HardSpan& h = foeHardSpans[o->second];
+							if (h.P == en->second && h.Skill == e.Skill) { h.To = std::min(h.To, rel(t)); o = foeHardOpen.erase(o); } else { ++o; }
+						}
+					}
+				}
 				if (e.Skill == 10243) { distortionUntil[e.Src] = std::min(distortionUntil[e.Src], t); }
 				else if (isDownInvuln(e.Skill)) { downInvulnUntil[e.Src] = std::min(downInvulnUntil[e.Src], t); }
 				if (e.Skill == kBoonIds[kStability] && foes.count(e.Src)) { lastFoeStabStrip[e.Src] = t; }
@@ -918,7 +956,11 @@ namespace Analysis
 				if (player(e.Src) && !cannotActSince.count(e.Src) && ownBuff.count(e.Src * 1000003ULL ^ e.Skill) && useKind(e.Skill) == U_Signet) { signetOff[e.Src * 1000003ULL ^ e.Skill] = {e.Src, e.Skill, t}; }
 				Player* p = player(e.Dst); // dst removed it; its own removals only, not a pet's
 				if (!p) { break; }
-				if (BoonIndex(e.Skill) >= 0 && e.Iff == IFF_FOE) { p->Strips++; stripTimes[e.Dst].push_back({t, e.Src}); f.OurStripsMs.push_back(rel(t)); p->StripMs.push_back(rel(t)); }
+				if (BoonIndex(e.Skill) >= 0 && e.Iff == IFF_FOE)
+				{
+					p->Strips++; stripTimes[e.Dst].push_back({t, e.Src}); f.OurStripsMs.push_back(rel(t)); p->StripMs.push_back(rel(t));
+					if (int en = enemy(e.Src); en >= 0) { f.Enemies[en].StripsIn.push_back({rel(t), static_cast<int>(p - f.Players.data()), BoonIndex(e.Skill)}); }
+				}
 				else if (kConditions.count(e.Skill) && friends.count(e.Src))
 				{
 					if (e.Src == e.Dst) { p->CleansesSelf++; }
@@ -944,7 +986,7 @@ namespace Analysis
 						p->ReviveMs += t - it->second.first;
 						revivingOpen.erase(it);
 					}
-					// a revive skill that went through (a Battle Standard counts on a Paragon only: the user's rule)
+					// a revive skill that went through (a Battle Standard counts on a Paragon only)
 					int32_t base = ReviveCastMs(e.Skill);
 					if (base && (e.Skill != 14419 || p->Spec == "Paragon"))
 					{
@@ -1006,6 +1048,25 @@ namespace Analysis
 				break;
 			case SC_BuffApply: case SC_BuffInitial:
 			{
+				// a condition from the enemy on an ally: counted, and the hard ones' stacks followed to their end
+				if (e.StateChange == SC_BuffApply && kConditions.count(e.Skill) && !friends.count(e.Src))
+				{
+					if (auto it = index.find(e.Dst); it != index.end())
+					{
+						f.Players[it->second].CondsIn++;
+						if (kHardConds.count(e.Skill) && e.Value > 0)
+						{
+							hardOpen[stackKey(e.Dst, e.Pad61)] = hardSpans.size();
+							hardSpans.push_back({it->second, e.Skill, rel(t), rel(t) + e.Value});
+						}
+					}
+				}
+				// a hard condition from an ally (or their minion) on an enemy, followed to its end the same way
+				if (e.StateChange == SC_BuffApply && kHardConds.count(e.Skill) && e.Value > 0 && foes.count(e.Dst) && player(owner(e.Src, e.SrcMaster)))
+				{
+					foeHardOpen[stackKey(e.Dst, e.Pad61)] = foeHardSpans.size();
+					foeHardSpans.push_back({enemy(e.Dst), e.Skill, rel(t), rel(t) + e.Value});
+				}
 				if (unblockIds.count(static_cast<int32_t>(e.Skill)) && player(e.Dst)) { spanOn(unblockOpen, e.Dst, t); }
 				if (mightSignetId && static_cast<int32_t>(e.Skill) == mightSignetId && player(e.Dst)) { spanOn(signetOpen, e.Dst, t); }
 				// who put each buff on a player last: themselves (a signet's passive) or someone else
@@ -1102,6 +1163,19 @@ namespace Analysis
 			}
 			case SC_BuffRemoveSingle:
 			{
+				if (kHardConds.count(e.Skill))
+				{
+					if (auto o = hardOpen.find(stackKey(e.Src, e.Pad61)); o != hardOpen.end())
+					{
+						hardSpans[o->second].To = std::min(hardSpans[o->second].To, rel(t));
+						hardOpen.erase(o);
+					}
+					else if (auto q = foeHardOpen.find(stackKey(e.Src, e.Pad61)); q != foeHardOpen.end())
+					{
+						foeHardSpans[q->second].To = std::min(foeHardSpans[q->second].To, rel(t));
+						foeHardOpen.erase(q);
+					}
+				}
 				if (unblockIds.count(static_cast<int32_t>(e.Skill))) { spanOff(unblockOpen, e.Src, t, false, &Player::UnblockableOn); }
 				if (mightSignetId && static_cast<int32_t>(e.Skill) == mightSignetId) { spanOff(signetOpen, e.Src, t, false, &Player::MightSignetReady); }
 				uint64_t key = stackKey(e.Src, e.Pad61);
@@ -1109,7 +1183,11 @@ namespace Analysis
 				if (e.Skill == kBoonIds[kStability] && foes.count(e.Src))
 				{
 					auto ls = lastFoeStabStrip.find(e.Src);
-					if (Player* by = player(owner(e.Dst, 0)); by && (ls == lastFoeStabStrip.end() || t - ls->second > 5)) { by->CcIntoStab++; f.EnemyStabUsedUp++; }
+					if (Player* by = player(owner(e.Dst, 0)); by && (ls == lastFoeStabStrip.end() || t - ls->second > 5))
+					{
+						by->CcIntoStab++; f.EnemyStabUsedUp++;
+						f.Enemies[enemy(e.Src)].StabBlocked.push_back({rel(t), static_cast<int>(by - f.Players.data())});
+					}
 				}
 				if (auto it = stabIndex.find(key); it != stabIndex.end() && e.Skill == kBoonIds[kStability])
 				{
@@ -1293,6 +1371,31 @@ namespace Analysis
 		for (auto& [addr, since] : deadSince) { deadMs[addr] += end - since; }
 		f.EnemyCount = static_cast<int>(enemiesSeen.size());
 
+		// the hard conditions' spans, merged per ally and per enemy (immobilize also on its own)
+		auto merge = [](std::vector<std::pair<int32_t, int32_t>>& v)
+		{
+			std::sort(v.begin(), v.end());
+			std::vector<std::pair<int32_t, int32_t>> merged;
+			for (auto& s : v) { if (!merged.empty() && s.first <= merged.back().second) { merged.back().second = std::max(merged.back().second, s.second); } else { merged.push_back(s); } }
+			v.swap(merged);
+		};
+		const int32_t endRel = rel(end);
+		for (const HardSpan& h : hardSpans)
+		{
+			const int32_t to = std::min(h.To, endRel);
+			if (to <= h.From) { continue; }
+			f.Players[h.P].HardCondOn.push_back({h.From, to});
+			if (h.Skill == 727) { f.Players[h.P].ImmobOn.push_back({h.From, to}); }
+		}
+		for (const HardSpan& h : foeHardSpans)
+		{
+			const int32_t to = std::min(h.To, endRel);
+			if (h.P < 0 || to <= h.From) { continue; }
+			f.Enemies[h.P].HardCondOn.push_back({h.From, to});
+			if (h.Skill == 727) { f.Enemies[h.P].ImmobOn.push_back({h.From, to}); }
+		}
+		for (Player& p : f.Players) { merge(p.HardCondOn); merge(p.ImmobOn); }
+		for (Fight::Enemy& en : f.Enemies) { merge(en.HardCondOn); merge(en.ImmobOn); }
 		// Spikes and timing
 		// Our spikes from damage to enemy players only (not NPCs, siege or gates). Runs of seconds (Spikes): on 110 rounds of
 		// 30 s+ 63% of our spikes had an enemy down from 1 s before their start to 4 s after their end, and 79% of enemy downs
@@ -1481,7 +1584,7 @@ namespace Analysis
 			if (!skill) { skill = AttributeBoon(windows[src->Addr], c.Applied, c.Boon, learned[src->Addr], reach[src->ProfId], src != tgt); }
 			if (!skill && src != tgt) { skill = TraitFor(*src, c.Applied, start, c.Boon, casts[src->Addr], boonApplied[src->Addr]); }
 			// stability given: not a self-only skill's (Balanced Stance never reaches anyone else, so "it missed them"
-			// would be wrong; the user, 2026-09-28)
+			// would be wrong)
 			if (c.Boon == kStability && !(SelfOnly(skill) >> kStability & 1)) { gives.push_back({src, rel(c.Applied), skill, static_cast<int>(tgt - f.Players.data())}); }
 			if (src == tgt) { continue; }
 			if (skill == 0 && (src->OtherBoonMs.empty() || src->OtherBoonMs.back() != std::make_pair(rel(c.Applied), c.Boon))) { src->OtherBoonMs.push_back({rel(c.Applied), c.Boon}); }
@@ -1538,7 +1641,7 @@ namespace Analysis
 		}
 		// Stability a skill gives the caster only: under one moment in ten this round reached anyone else (30 Sept and
 		// 25 Sept: a Chronomancer's shatters 1%, Distortion 0%, a Troubadour's Harp, Lute, Flute and Drum Playing 0%,
-		// Lively Lute 6%; Power Break 92% to 98%). Deaths said "it missed" a teammate for them (the user, 2026-09-30).
+		// Lively Lute 6%; Power Break 92% to 98%). Deaths said "it missed" a teammate for them.
 		for (Player& p : f.Players)
 		{
 			const int self = static_cast<int>(&p - f.Players.data());
@@ -1641,9 +1744,9 @@ namespace Analysis
 				}
 			}
 		}
-		// Your stability on your subgroup in each enemy spike (the user, 2026-10-01: what counts is whether it was on
-		// them when it was needed): the share of the subgroup, alive and up at the peak, that carried a stack from you
-		// at some point in the 3 s up to the peak, when their CC lands (at the peak itself: 0% for most givers)
+		// Your stability on your subgroup in each enemy spike: the share of the subgroup, alive and up at the peak,
+		// that carried a stack from you at some point in the 3 s up to the peak, when their CC lands (at the peak
+		// itself: 0% for most givers)
 		for (Player& p : f.Players)
 		{
 			if (p.StabAllyMs <= 0) { continue; }
@@ -1899,7 +2002,7 @@ namespace Analysis
 				}
 				for (auto& g : p.StabGives) { g.Skill = keep(p.ProfId, g.Skill); }
 				// their hits too: the spike breakdown's skill list and lines go by them (an Evoker's Fulgor is cast as 73091 and
-				// hits as 73125: two "Fulgor" to pick, one with no casts on the time line; the user, 2026-09-30)
+				// hits as 73125: two "Fulgor" to pick, one with no casts on the time line)
 				for (auto& h : p.HitsOut) { h.Skill = keep(p.ProfId, h.Skill); }
 			}
 		}

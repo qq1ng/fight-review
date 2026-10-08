@@ -37,7 +37,7 @@ namespace Ui
 		State& s = S();
 		// the same pane again: nothing to go back to, unless it shows another down or spike (the caller sets which, after)
 		if (aPane == s.Shown && aPane != P_Down && aPane != P_Round) { return; }
-		s.Back.push_back({s.Shown, s.SpikeOpen, s.SpikeEnemy, s.DeathKey, s.DeathFilter, s.RoundView, s.DeathPlayer});
+		s.Back.push_back({s.Shown, s.SpikeOpen, s.SpikeEnemy, s.DeathKey, s.DeathFilter, s.RoundView, s.DeathPlayer, s.DeathCause});
 		if (s.Back.size() > 16) { s.Back.erase(s.Back.begin()); }
 		s.Shown = aPane;
 	}
@@ -392,6 +392,12 @@ namespace Ui
 		return aAtStart ? std::pair<int64_t, int64_t>{first - aBefore, first + aAfter} : std::pair<int64_t, int64_t>{first - aBefore, last + aAfter};
 	}
 
+	std::string SpikeWhen(const Fight& f, bool aOurs, int64_t aPeak)
+	{
+		auto [from, to] = SpikeSpan(f, aOurs, aPeak);
+		return to - from >= 4000 ? Duration(from) + "-" + Duration(to) + ", peak " + Duration(aPeak) : "at " + Duration(aPeak);
+	}
+
 	bool InSpike(const Fight& f, bool aOurs, int64_t aMs, int64_t aBefore, int64_t aAfter, bool aAtStart)
 	{
 		for (int64_t t : aOurs ? f.OurSpikesMs : f.TheirSpikesMs)
@@ -632,8 +638,7 @@ namespace Ui
 				for (const char* job : row.Jobs) { if (std::find(e.Jobs.begin(), e.Jobs.end(), job) == e.Jobs.end()) { e.Jobs.push_back(job); } }
 				if (!when.empty() && when != "not Ventari" && std::find(builds.begin(), builds.end(), when) == builds.end()) { builds.push_back(when); }
 			}
-			// Outgoing CC as a job when this spec lands clearly more than the squad does tonight (the user, 2026-09-25:
-			// important for a few classes; on all logs to date only Chronomancers do, at 1.8x the squad average)
+			// Outgoing CC as a job when this spec lands clearly more than the squad does tonight
 			const char* kCc = "CC on enemies /min";
 			if (std::find(e.Jobs.begin(), e.Jobs.end(), kCc) == e.Jobs.end() && SpecCcRatio(aFights, aSpec) >= 1.3) { e.Jobs.push_back(kCc); }
 			if (!builds.empty())
@@ -668,7 +673,7 @@ namespace Ui
 		for (auto& [sk, r] : tonight.Skills) { if (r.Casts > 0 || r.Hits > 0) { c.UsedTonight.insert(sk); } }
 		c.MyRole = RoleOf(tonight);
 		c.Jobs = JobsFor(aFights, c.MeRaw->Account, c.MeRaw->Spec, &c.Build);
-		// Your first job sets the role (the user's job lists); healing needs Healing Stats data to measure
+		// Your first job sets the role; healing needs Healing Stats data to measure
 		if (!c.Jobs.empty())
 		{
 			const std::string& first = c.Jobs[0];
@@ -691,8 +696,8 @@ namespace Ui
 				c.Peers.push_back(Sum(c.Scope, p.Account, p.Spec, c.Names));
 			}
 		}
-		// Nobody else on your spec this round: your own best round tonight on it (30 s+), so skill fixes work (the
-		// user's choice, 2026-09-25); tonight as a whole, or with no other round of yours, your role on other specs
+		// Nobody else on your spec this round: your own best round tonight on it (30 s+), so skill fixes work; tonight
+		// as a whole, or with no other round of yours, your role on other specs
 		if (c.Peers.empty() && c.OneRound)
 		{
 			const Metric& rm = Metrics()[c.RoleMetric];
@@ -807,7 +812,7 @@ namespace Ui
 
 	Why Explain(const Player& you, const Player& vs, const std::string& aVsName, int aMetric, int32_t aSkill, bool aOneRound, const std::string& aYouName)
 	{
-		// "You got ..." or "Ellyx got ..." when neither player is you
+		// "You got ..." or "Aria got ..." when neither player is you
 		const bool self = aYouName.empty();
 		const std::string subj = self ? "You" : aYouName, obj = self ? "you" : aYouName;
 		const std::string poss = self ? "your" : aYouName + "'s", possCap = self ? "Your" : aYouName + "'s";
@@ -871,8 +876,8 @@ namespace Ui
 			return w;
 		}
 		// one boon skill's timing is no reason on its own: a build gives that boon from many skills, and what counts is
-		// the boon on the ally when it's needed (the user, 2026-10-01: Power Break "cast late" on a Troubadour, 0 of 1
-		// against 1 of 3). The boon's own measures say that (CC covered, stability that blocked CC, left over).
+		// the boon on the ally when it's needed. The boon's own measures say that (CC covered, stability that blocked
+		// CC, left over).
 		int k = TimingWindow(aMetric);
 		double inY = double(ry->Timing[k]) / cy, inT = ct ? double(rt->Timing[k]) / ct : 0.0;
 		if (m.What != K_Boon && ct >= 3 && inT - inY >= 0.25)
@@ -951,6 +956,26 @@ namespace Ui
 		if (void* icon = SkillIcons::Get(aSkill, aName)) { ImGui::Image(icon, ImVec2(size, size)); }
 		else { ImGui::Dummy(ImVec2(size, size)); }
 		ImGui::SameLine(0, 4);
+	}
+
+	// An enemy's spec as a Player, so SpecIconAt draws its class icon (elite ids as in Evtc's SpecName)
+	Player SpecPlayer(const std::string& aSpec)
+	{
+		struct Row { const char* Name; uint32_t Prof, Elite; };
+		static const Row kRows[] = {
+			{"Guardian", 1, 0}, {"Dragonhunter", 1, 27}, {"Firebrand", 1, 62}, {"Willbender", 1, 65}, {"Luminary", 1, 81},
+			{"Warrior", 2, 0}, {"Berserker", 2, 18}, {"Spellbreaker", 2, 61}, {"Bladesworn", 2, 68}, {"Paragon", 2, 74},
+			{"Engineer", 3, 0}, {"Scrapper", 3, 43}, {"Holosmith", 3, 57}, {"Mechanist", 3, 70}, {"Amalgam", 3, 75},
+			{"Ranger", 4, 0}, {"Druid", 4, 5}, {"Soulbeast", 4, 55}, {"Untamed", 4, 72}, {"Galeshot", 4, 78},
+			{"Thief", 5, 0}, {"Daredevil", 5, 7}, {"Deadeye", 5, 58}, {"Specter", 5, 71}, {"Antiquary", 5, 77},
+			{"Elementalist", 6, 0}, {"Tempest", 6, 48}, {"Weaver", 6, 56}, {"Catalyst", 6, 67}, {"Evoker", 6, 80},
+			{"Mesmer", 7, 0}, {"Chronomancer", 7, 40}, {"Mirage", 7, 59}, {"Virtuoso", 7, 66}, {"Troubadour", 7, 73},
+			{"Necromancer", 8, 0}, {"Reaper", 8, 34}, {"Scourge", 8, 60}, {"Harbinger", 8, 64}, {"Ritualist", 8, 76},
+			{"Revenant", 9, 0}, {"Herald", 9, 52}, {"Renegade", 9, 63}, {"Vindicator", 9, 69}, {"Conduit", 9, 79}};
+		Player p;
+		p.Spec = aSpec;
+		for (const Row& r : kRows) { if (aSpec == r.Name) { p.ProfId = r.Prof; p.EliteId = r.Elite; } }
+		return p;
 	}
 
 	void SpecIconAt(ImDrawList* dl, ImVec2 aPos, float aSize, const Player& p)
@@ -1199,8 +1224,8 @@ namespace Ui
 
 	namespace { std::unordered_map<ImGuiID, uint32_t> s_NumCols; } // table -> its columns that held numbers (a bit each)
 
-	// A number column's heading sits right, over its numbers (the user, 2026-10-01: headings at the left over numbers
-	// at the right looked disconnected). Which columns hold numbers is known from NumCell, a frame late.
+	// A number column's heading sits right, over its numbers. Which columns hold numbers is known from NumCell, a frame
+	// late.
 	void Headers(const std::vector<std::pair<const char*, const char*>>& aColumns)
 	{
 		ImGuiTable* table = ImGui::GetCurrentContext()->CurrentTable;

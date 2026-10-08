@@ -52,8 +52,7 @@ namespace Ui
 			return out;
 		}
 
-		// Enemy hits Distortion absorbed per step (Kind 0); the rest that did nothing are in the enemy spike's summary (the
-		// user, 2026-10-06: no lane of their own)
+		// Enemy hits Distortion absorbed per step (Kind 0); the rest that did nothing are in the enemy spike's summary
 		std::vector<int> AbsorbedPerStep(const Fight& f, int64_t aFrom, int64_t aStep, size_t aSteps)
 		{
 			std::vector<int> out(aSteps, 0);
@@ -66,7 +65,7 @@ namespace Ui
 		}
 
 		// A lane of counts per step, bars from the bottom on a square-root scale: 5 hits still show beside 239 in a lane a
-		// few lines tall (the user, 2026-10-06: small bars got lost at the window's size)
+		// few lines tall
 		void CountLane(ImDrawList* dl, const std::vector<int>& aSteps, float aX, float aStepW, float aY, float aH, ImU32 aCol)
 		{
 			int mx = 1;
@@ -87,6 +86,18 @@ namespace Ui
 			return aOurs ? SpikeWindow(f, true, aPeak, 1500, 1500) : SpikeWindow(f, false, aPeak, 0, 3000);
 		}
 
+		// A spike breakdown's window: kSpan either side of the peak, stretched over a long spike's whole run; a one-
+		// second spike keeps its peak +-3 s. aT: the detector's peak second; aPeak: the breakdown's own peak (ours: the
+		// busiest quarter second)
+		std::pair<int64_t, int64_t> WindowOf(const Fight& f, bool aOurs, int64_t aT, int64_t aPeak)
+		{
+			auto [a, b] = SpikeWindow(f, aOurs, aT, 0, 0);
+			if (b - a < 1000) { return {aPeak - kSpan, aPeak + kSpan}; }
+			// whole bins from the start (the bins are indexed (ms - from) / kBin up to to)
+			const int64_t from = std::min(aPeak, a) - kSpan, to = std::max(aPeak, b) + kSpan;
+			return {from, from + (to - from + kBin - 1) / kBin * kBin};
+		}
+
 		// The spike whose band holds this moment (a little before an enemy one's too); the nearest peak when bands touch;
 		// -1 none
 		int64_t SpikeUnder(const Fight& f, int64_t aMs, bool aAlly)
@@ -101,7 +112,7 @@ namespace Ui
 			return best;
 		}
 
-		// A lane's name at the left, with its rule on hover (the user: explanations on the heading's hover)
+		// A lane's name at the left, with its rule on hover
 		void LaneLabel(ImDrawList* dl, ImVec2 aPos, float aW, ImU32 aCol, const std::string& aLabel, const char* aRule)
 		{
 			SmallText(dl, aPos, aCol, aLabel);
@@ -113,9 +124,10 @@ namespace Ui
 		struct Lane
 		{
 			const Player* P = nullptr;
-			std::array<double, 2 * kSpan / kBin> Bins{};
+			std::vector<double> Bins; // per kBin over the spike's window (Spike::From to To)
 			double Damage = 0;
 			double Centre = 0;       // ms from the peak, damage-weighted
+			double Off = 0;          // ms past the on-time edge (the peak; a long spike's run), signed; 0 inside
 			std::string Why;         // why not more: down, CC'd, stripped
 			int Timing = 0;          // -1 early, 0 on time, 1 late, 2 no damage
 		};
@@ -125,6 +137,7 @@ namespace Ui
 			bool Ours = true;
 			int64_t T = 0;            // the detector's peak second (its middle)
 			int64_t Peak = 0;         // ours: the peak quarter second
+			int64_t From = 0, To = 0; // the breakdown's window (WindowOf)
 			int Downs = 0;            // ours: enemies downed from 1 s before to 4 s after; theirs: allies downed
 			int Died = 0;             // theirs: of those, died
 			// ours
@@ -215,27 +228,35 @@ namespace Ui
 				s.T = t;
 				s.Downs = static_cast<int>(std::count_if(f.EnemyDownMs.begin(), f.EnemyDownMs.end(), [&](int32_t d) { return SpikeOf(f, true, d) == t; }));
 				std::map<int64_t, double> bins;
-				for (const Player& p : f.Players) { for (const auto& h : p.HitsOut) { if (h.Ms >= t - 1500 && h.Ms < t + 1500) { bins[h.Ms / kBin] += h.Damage; } } }
+				const auto [peakFrom, peakTo] = SpikeWindow(f, true, t, 1500, 1500);
+				for (const Player& p : f.Players) { for (const auto& h : p.HitsOut) { if (h.Ms >= peakFrom && h.Ms < peakTo) { bins[h.Ms / kBin] += h.Damage; } } }
 				s.Peak = t;
 				double best = -1;
 				for (auto& [b, d] : bins) { if (d > best) { best = d; s.Peak = b * kBin + kBin / 2; } }
+				std::tie(s.From, s.To) = WindowOf(f, true, t, s.Peak);
+				// on time: centred within 1 s of the peak; for a long spike, within 1 s of its run
+				const auto [runA, runB] = SpikeWindow(f, true, t, 0, 0);
+				const bool longRun = runB - runA >= 1000;
+				const double edgeLo = longRun ? double(std::min(s.Peak, runA)) : double(s.Peak), edgeHi = longRun ? double(std::max(s.Peak, runB)) : double(s.Peak);
 				for (const Player* p : v.DamagePlayers)
 				{
 					Lane l;
 					l.P = p;
+					l.Bins.assign(static_cast<size_t>((s.To - s.From) / kBin), 0.0);
 					double weighted = 0;
 					for (const auto& h : p->HitsOut)
 					{
-						int64_t d = h.Ms - s.Peak;
-						if (d < -kSpan || d >= kSpan) { continue; }
-						l.Bins[static_cast<size_t>((d + kSpan) / kBin)] += h.Damage;
+						if (h.Ms < s.From || h.Ms >= s.To) { continue; }
+						l.Bins[static_cast<size_t>((h.Ms - s.From) / kBin)] += h.Damage;
 						l.Damage += h.Damage;
-						weighted += h.Damage * double(d);
+						weighted += h.Damage * double(h.Ms - s.Peak);
 					}
 					l.Centre = l.Damage > 0 ? weighted / l.Damage : 0;
+					const double at = double(s.Peak) + l.Centre;
+					l.Off = at < edgeLo ? at - edgeLo : at > edgeHi ? at - edgeHi : 0.0;
 					l.Why = WhyNot(*p, s.Peak);
 					bool down = DownAt(*p, s.Peak);
-					l.Timing = l.Damage <= 0 ? 2 : l.Centre > kOnTime ? 1 : l.Centre < -kOnTime ? -1 : 0;
+					l.Timing = l.Damage <= 0 ? 2 : l.Off > kOnTime ? 1 : l.Off < -kOnTime ? -1 : 0;
 					if (down) { s.Down++; } else { s.Alive++; }
 					if (!down) { s.OnTime += l.Timing == 0; s.Late += l.Timing == 1; s.Early += l.Timing == -1; }
 					s.Lanes.push_back(l);
@@ -259,6 +280,7 @@ namespace Ui
 				Spike s;
 				s.Ours = false;
 				s.T = s.Peak = t;
+				std::tie(s.From, s.To) = WindowOf(f, false, t, t);
 				s.MinHitters = 1 << 30;
 				for (const Down& d : downs)
 				{
@@ -475,7 +497,7 @@ namespace Ui
 				ImVec2 p = ImGui::GetCursorScreenPos();
 				bool remove = ImGui::InvisibleButton("chip", ImVec2(w, ImGui::GetFrameHeight()));
 				// with the "+ Add skill" list still open, ImGui spends a click outside it on closing the list: the chip then
-				// ignored it (the user, 2026-10-01: "clicking to remove doesn't always work")
+				// ignored it
 				if (!remove && ImGui::IsMouseClicked(0) && ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) &&
 					ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup)) { remove = true; }
 				if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Remove"); }
@@ -690,10 +712,10 @@ namespace Ui
 			double span = static_cast<double>(std::max<int64_t>(1, f.DurationMs));
 			auto x = [&](double ms) { return top.x + static_cast<float>(std::clamp(ms / span, 0.0, 1.0)) * width; };
 			// Rails: our marked skills above the graph, theirs below it (their picker sits under their rails, so adding
-			// our skills never pushes theirs away; the user, 2026-10-01). A rail opens into a row per player (per enemy),
-			// each use with its trail to its last hit: a well's pulses show as one line from the player's own cast (the
-			// user, 2026-10-02: the first activation per player was hard to read). Between the rails and the graph, a
-			// lane per side for invulnerability: who had a hit on them absorbed (Tale of the August Queen, distortion).
+			// our skills never pushes theirs away). A rail opens into a row per player (per enemy), each use with its
+			// trail to its last hit: a well's pulses show as one line from the player's own cast. Between the rails and
+			// the graph, a lane per side for invulnerability: who had a hit on them absorbed (Tale of the August Queen,
+			// distortion).
 			struct RailRow
 			{
 				int32_t Skill = 0;
@@ -776,14 +798,14 @@ namespace Ui
 			bool hovered = ImGui::IsItemHovered();
 			const ImVec2 after = ImGui::GetCursorScreenPos();
 			// enemies invulnerable over the ally damage they cut; under the enemy damage, ally invulnerability with the hits it
-			// absorbed (the user chose this from a mockup, 2026-10-06)
+			// absorbed
 			float inv0 = top.y + railsH, g0 = inv0 + invH, g1 = g0 + graphH, abs0 = g1, e0 = abs0 + hitsH, mid = g0 + graphH * 0.5f;
 			dl->AddRectFilled(top, ImVec2(top.x + width, top.y + h), kLaneBg);
 			// spikes: ours over our rails and our half of the graph, with the enemies they downed; theirs over their half and
-			// their rails; neither over the invulnerability lanes (the user, 2026-10-03)
+			// their rails; neither over the invulnerability lanes
 			for (const Spike& sp : v.Spikes)
 			{
-				// each band over the spike's whole run (a long one is one band, the user, 2026-10-06)
+				// each band over the spike's whole run (a long one is one band)
 				const auto [a, b] = Band(f, sp.Ours, sp.T);
 				if (sp.Ours)
 				{
@@ -921,7 +943,7 @@ namespace Ui
 			}
 			dl->AddLine(ImVec2(top.x, mid), ImVec2(top.x + width, mid), IM_COL32(58, 62, 69, 255));
 			// enemy hits on allies Distortion absorbed, per second, in its band: a Tale or a distortion that took a burst
-			// shows here, not in the damage (the user, 2026-10-05); landed hits are the enemy damage above
+			// shows here, not in the damage; landed hits are the enemy damage above
 			{
 				static std::string key;
 				static std::vector<int> absorbed;
@@ -1000,10 +1022,9 @@ namespace Ui
 					if (!specs.empty()) { ImGui::TextColored(kMuted, "%s", specs.c_str()); }
 				}
 				// on a spike in the graph (the upper half the ally one, the lower half the enemy one): the spike as the strip
-				// shows it (the user, 2026-10-05), else this second's numbers
-				// the spike under the mouse, found on its band as drawn (an ally spike 1.5 s either side of its peak, an enemy
-				// spike from its peak to 3 s after); a white box around the band, as on the strip at the left (the user,
-				// 2026-10-06), its story, and a click opens it
+				// shows it, else this second's numbers the spike under the mouse, found on its band as drawn (an ally spike
+				// 1.5 s either side of its peak, an enemy spike from its peak to 3 s after); a white box around the band, as
+				// on the strip at the left, its story, and a click opens it
 				else if (const int64_t best = m.y >= g0 && m.y < g1 ? SpikeUnder(f, at, m.y < mid) : -1;
 					best >= 0 && SpikeTipLines(c, static_cast<int32_t>(best), m.y < mid))
 				{
@@ -1083,9 +1104,8 @@ namespace Ui
 			}
 		}
 
-		// A spike's graph, the same for both sides (the user, 2026-10-01: an enemy skill picked in their spike showed on
-		// the round's clock, not on the spike's own graph as ours do): the picked skills as chips, all that side's damage
-		// as a strip, the picked skills' damage per quarter second below it (one scale each), and who used them
+		// A spike's graph, the same for both sides: the picked skills as chips, all that side's damage as a strip, the
+		// picked skills' damage per quarter second below it (one scale each), and who used them
 		void SpikeGraph(const Ctx& c, const Spike& sp, bool aEnemy)
 		{
 			const Fight& f = *c.F;
@@ -1093,15 +1113,15 @@ namespace Ui
 			std::vector<int32_t>& picked = aEnemy ? s.PickedEnemy : s.Picked;
 			float lh = ImGui::GetTextLineHeight();
 			const int64_t peak = aEnemy ? sp.T : sp.Peak;
-			const int64_t from = peak - kSpan, to = peak + kSpan;
+			const int64_t from = sp.From, to = sp.To;
 			if (aEnemy) { Chips("spikeenemyskills", f, EnemySkills(f, from, to), "Enemy skills", picked, true); }
 			else { Chips("spikeskills", f, SquadSkills(f, from, to), "Skills", picked); }
 
-			constexpr int kBins = 2 * kSpan / kBin;
+			const int kBins = static_cast<int>((to - from) / kBin);
 			// a 1/4 s bin's damage as a rate, to read like the round's graph (per second): 56k in a 1/4 s is 225k /s
 			constexpr double kPerS = 1000.0 / kBin;
-			std::vector<std::array<double, kBins>> lines(picked.size());
-			std::array<double, kBins> all{};
+			std::vector<std::vector<double>> lines(picked.size(), std::vector<double>(static_cast<size_t>(kBins), 0.0));
+			std::vector<double> all(static_cast<size_t>(kBins), 0.0);
 			auto add = [&](int32_t aMs, int32_t aSkill, double aDamage)
 			{
 				if (aMs < from || aMs >= to) { return; }
@@ -1146,8 +1166,8 @@ namespace Ui
 			const float labelW = 200;
 			float width = ImGui::GetContentRegionAvail().x;
 			float gw = width - labelW - 10;
-			// two plots on one clock, each with one scale (the user's v6 review: one plot with two scales misled): all
-			// the side's damage as a strip on top, the picked skills' damage below
+			// two plots on one clock, each with one scale: all the side's damage as a strip on top, the picked skills'
+			// damage below
 			const float stripH = lh * 3, gapH = 6, invH = aEnemy ? lh * 1.6f : lh * 0.9f;
 			const float gh = lh * 9;
 			ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1172,9 +1192,9 @@ namespace Ui
 				dl->AddRectFilled(ImVec2(x(from + b * kBin) + 1, st.y + stripH - hgt), ImVec2(x(from + (b + 1) * kBin) - 1, st.y + stripH), aEnemy ? kEnemy : IM_COL32(0x5a, 0x5f, 0x68, 255));
 			}
 			SmallText(dl, ImVec2(st.x + 4, st.y + 1), mutedCol, (aEnemy ? "all enemy damage to allies, peak " : "all ally damage to players, peak ") + Num(allMx * kPerS) + " /s");
-			// invulnerability of the side being hit (the user, 2026-10-03): ours from who gave it, per quarter second;
-			// theirs from our hits they absorbed, per second
-			std::array<int, kBins> invCount{};
+			// invulnerability of the side being hit: ours from who gave it, per quarter second; theirs from our hits
+			// they absorbed, per second
+			std::vector<int> invCount(static_cast<size_t>(kBins), 0);
 			for (int b = 0; b < kBins; b++)
 			{
 				const int32_t at = static_cast<int32_t>(from + b * kBin + kBin / 2);
@@ -1195,7 +1215,7 @@ namespace Ui
 				ImU32 col = (kEnemy & ~IM_COL32_A_MASK) | (static_cast<ImU32>(alpha) << IM_COL32_A_SHIFT);
 				dl->AddRectFilled(ImVec2(x(from + b * kBin) + 1, inv.y + 2), ImVec2(x(from + (b + 1) * kBin) - 1, inv.y + invH - 2), col);
 			}
-			// enemy hits Distortion absorbed per quarter second, in its band, as in the round's graph (the user, 2026-10-05 and 06)
+			// enemy hits Distortion absorbed per quarter second, in its band, as in the round's graph
 			if (aEnemy)
 			{
 				CountLane(dl, AbsorbedPerStep(f, from, kBin, kBins), inv.x, gw / kBins, inv.y, invH, kYou);
@@ -1208,7 +1228,7 @@ namespace Ui
 				SmallText(dl, ImVec2(g.x + 8, g.y + gh * 0.5f - lh * 0.5f), mutedCol, aEnemy ? "Add enemy skills above, or click one in What hit allies below, to see their damage here."
 					: "Add skills above, or click one in What hit enemies below, to see their damage here.");
 			}
-			// the peak: a bright line on a dark edge through both, and every lane below (the user: the grey got lost)
+			// the peak: a bright line on a dark edge through both, and every lane below
 			dl->AddLine(ImVec2(x(double(peak)), st.y), ImVec2(x(double(peak)), g.y + gh), IM_COL32(0x10, 0x11, 0x14, 255), 5.0f);
 			dl->AddLine(ImVec2(x(double(peak)), st.y), ImVec2(x(double(peak)), g.y + gh), ImGui::GetColorU32(ImGuiCol_Text), 2.0f);
 			// a step line per skill with its mark at its highest point; the names are in the legend at the left, clear of
@@ -1229,11 +1249,16 @@ namespace Ui
 				if (lines[i][high] > 0) { Mark(dl, ImVec2(x(from + high * kBin + kBin / 2), y(lines[i][high]) - lh * 0.45f), lh * 0.33f, static_cast<int>(i % 5), col); }
 			}
 			if (!lines.empty()) { SmallText(dl, ImVec2(g.x + 4, g.y + 1), mutedCol, "the skills' damage, peak " + Num(mx * kPerS) + " /s"); }
-			// the axis
-			for (int t = -3; t <= 3; t++)
+			// the axis: seconds from the peak, every second (every 2 or 3 over a long spike's window)
 			{
-				std::string label = t == 0 ? "peak" : (t > 0 ? "+" : "") + std::to_string(t) + " s";
-				SmallText(dl, ImVec2(x(peak + t * 1000.0) - ImGui::CalcTextSize(label.c_str()).x * 0.4f, g.y + gh + 2), mutedCol, label);
+				const int lo = static_cast<int>(std::ceil((from - peak) / 1000.0)), hi = static_cast<int>(std::floor((to - peak) / 1000.0));
+				const int step = hi - lo > 18 ? 3 : hi - lo > 9 ? 2 : 1;
+				for (int t = lo; t <= hi; t++)
+				{
+					if (t % step) { continue; }
+					std::string label = t == 0 ? "peak" : (t > 0 ? "+" : "") + std::to_string(t) + " s";
+					SmallText(dl, ImVec2(x(peak + t * 1000.0) - ImGui::CalcTextSize(label.c_str()).x * 0.4f, g.y + gh + 2), mutedCol, label);
+				}
 			}
 			// the legend at the left
 			{
@@ -1299,8 +1324,8 @@ namespace Ui
 				}
 			}
 
-			// Who used them: a lane per picked skill on the graph's clock, an icon per use with who beside it (the user's
-			// v5: the graph keeps only the lines). A thin frame: a use seen by its first hit (no cast logged; theirs always).
+			// Who used them: a lane per picked skill on the graph's clock, an icon per use with who beside it. A thin frame:
+			// a use seen by its first hit (no cast logged; theirs always).
 			if (!picked.empty())
 			{
 				ImGui::TextUnformatted("Who used them");
@@ -1348,16 +1373,14 @@ namespace Ui
 			}
 		}
 
-		// The side's skills in the 6 s around the peak, most damage first (the user, 2026-10-01: the enemy spike's list
-		// is a quick view of what did the most; ours should have it too). A click shows a skill on the graph above.
+		// The side's skills in the 6 s around the peak, most damage first. A click shows a skill on the graph above.
 		void TopSkills(const Ctx& c, const Spike& sp, bool aEnemy)
 		{
 			const Fight& f = *c.F;
 			State& s = S();
 			std::vector<int32_t>& picked = aEnemy ? s.PickedEnemy : s.Picked;
 			float lh = ImGui::GetTextLineHeight();
-			const int64_t peak = aEnemy ? sp.T : sp.Peak;
-			const int64_t from = peak - kSpan, to = peak + kSpan;
+			const int64_t from = sp.From, to = sp.To;
 			struct Row { double Damage = 0; int Hits = 0; std::map<std::string, double> By; };
 			std::map<int32_t, Row> by;
 			double total = 0;
@@ -1379,7 +1402,8 @@ namespace Ui
 			ImGui::Spacing();
 			ImGui::TextUnformatted(aEnemy ? "What hit allies" : "What hit enemies");
 			ImGui::SameLine(0, 12);
-			ImGui::TextColored(kMuted, "%s in the 6 s around the peak; click a skill to show it on the graph above", Num(total).c_str());
+			ImGui::TextColored(kMuted, "%s in the %d s around the %s; click a skill to show it on the graph above", Num(total).c_str(), static_cast<int>((to - from) / 1000),
+				to - from > 2 * kSpan ? "spike" : "peak");
 			if (skills.empty()) { ImGui::TextColored(kMuted, "No hits in these 6 s."); return; }
 			ImDrawList* dl = ImGui::GetWindowDrawList();
 			ImU32 ink = ImGui::GetColorU32(ImGuiCol_Text);
@@ -1442,7 +1466,7 @@ namespace Ui
 			if (ImGui::Button("< All spikes")) { s.SpikeOpen = -1; return; }
 			ImGui::SameLine(0, 12);
 			ImGui::AlignTextToFramePadding();
-			ImGui::Text("Ally spike at %s", Duration(sp.T).c_str());
+			ImGui::Text("Ally spike %s", SpikeWhen(*c.F, true, sp.T).c_str());
 			float stepW = ImGui::CalcTextSize("< Spike").x + ImGui::CalcTextSize("Spike >").x + ImGui::CalcTextSize("00 of 00").x + ImGui::GetStyle().FramePadding.x * 4 + 24;
 			ImGui::SameLine();
 			ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX() + 10, ImGui::GetWindowContentRegionMax().x - stepW));
@@ -1459,7 +1483,8 @@ namespace Ui
 			// the graph and who used the picked skills, then our skills here, most damage first
 			SpikeGraph(c, sp, false);
 			TopSkills(c, sp, false);
-			constexpr int kBins = 2 * kSpan / kBin;
+			const int kBins = static_cast<int>((sp.To - sp.From) / kBin);
+			auto laneX0 = [&](double aMs) { return static_cast<float>((aMs - double(sp.From)) / double(sp.To - sp.From)); }; // 0..1 across a lane
 			const float labelW = 200;
 			float width = ImGui::GetContentRegionAvail().x;
 			ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1498,7 +1523,7 @@ namespace Ui
 				if (ImGui::IsItemHovered() && ImGui::GetIO().MousePos.x < p.x + laneX) { ImGui::SetTooltip("%s", l.P->Spec.c_str()); }
 				ImVec2 lp(p.x + laneX, p.y);
 				dl->AddRectFilled(lp, ImVec2(lp.x + laneW, lp.y + rh), kLaneBg);
-				float cxPeak = lp.x + laneW * 0.5f;
+				float cxPeak = lp.x + laneW * laneX0(double(sp.Peak));
 				dl->AddLine(ImVec2(cxPeak, lp.y), ImVec2(cxPeak, lp.y + rh), ImGui::GetColorU32(ImGuiCol_Text), 1.5f);
 				float bwid = laneW / kBins;
 				for (int b = 0; b < kBins; b++)
@@ -1508,12 +1533,12 @@ namespace Ui
 				}
 				if (l.Damage > 0)
 				{
-					float cx = lp.x + static_cast<float>((l.Centre + kSpan) / (2.0 * kSpan)) * laneW;
+					float cx = lp.x + laneX0(double(sp.Peak) + l.Centre) * laneW;
 					Mark(dl, ImVec2(cx, lp.y + rh * 0.5f), rh * 0.3f, 2, ink);
 				}
 				std::string dmg = l.Damage > 0 ? Num(l.Damage) : "-";
 				dl->AddText(ImVec2(p.x + dmgX - ImGui::CalcTextSize(dmg.c_str()).x, p.y + 2), ink, dmg.c_str());
-				std::string timing = l.Timing == 2 ? "no damage" : l.Timing == 1 ? Secs(l.Centre) + " late" : l.Timing == -1 ? Secs(l.Centre) + " early" : "on time";
+				std::string timing = l.Timing == 2 ? "no damage" : l.Timing == 1 ? Secs(l.Off) + " late" : l.Timing == -1 ? Secs(l.Off) + " early" : "on time";
 				dl->AddText(ImVec2(p.x + dmgX + 12, p.y + 2), l.Timing == 1 || l.Timing == 2 ? kWorse : ink, timing.c_str());
 				if (!l.Why.empty())
 				{
@@ -1534,9 +1559,8 @@ namespace Ui
 			ImGui::TextColored(kMuted, "On time: damage centred within 1 s of the peak.");
 		}
 
-		// An enemy spike broken down (the user's v7 pick: proposal A with B's list of what hit us): their damage to us
-		// around the peak, the enemy skills that did it, most first, and who they hit, most damage first. The downs are
-		// in Deaths ("Allied downs >").
+		// An enemy spike broken down: their damage to us around the peak, the enemy skills that did it, most first, and
+		// who they hit, most damage first. The downs are in Deaths ("Allied downs >").
 		void EnemyBreakdown(const Ctx& c, const View& v, const Spike& sp)
 		{
 			const Fight& f = *c.F;
@@ -1548,7 +1572,7 @@ namespace Ui
 			if (ImGui::Button("< All spikes")) { s.SpikeOpen = -1; return; }
 			ImGui::SameLine(0, 12);
 			ImGui::AlignTextToFramePadding();
-			ImGui::Text("Enemy spike at %s", Duration(sp.T).c_str());
+			ImGui::Text("Enemy spike %s", SpikeWhen(f, false, sp.T).c_str());
 			float stepW = ImGui::CalcTextSize("< Spike").x + ImGui::CalcTextSize("Spike >").x + ImGui::CalcTextSize("00 of 00").x + ImGui::GetStyle().FramePadding.x * 4 + 24;
 			ImGui::SameLine();
 			ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX() + 10, ImGui::GetWindowContentRegionMax().x - stepW));
@@ -1562,10 +1586,10 @@ namespace Ui
 			ImGui::TextColored(kMuted, "%s", sp.Line.c_str());
 			ImGui::PopTextWrapPos();
 
-			const int64_t from = sp.T - kSpan, to = sp.T + kSpan;
-			constexpr int kBins = 2 * kSpan / kBin;
+			const int64_t from = sp.From, to = sp.To;
+			const int kBins = static_cast<int>((to - from) / kBin);
 			// their damage, per skill and per ally hit
-			struct Hit { const Player* P; double Damage = 0; std::array<double, kBins> Bins{}; };
+			struct Hit { const Player* P = nullptr; double Damage = 0; std::vector<double> Bins; };
 			std::map<const Player*, Hit> byAlly;
 			std::map<int32_t, std::pair<double, int>> bySkill;
 			std::map<int, double> bySubgroup;
@@ -1578,6 +1602,7 @@ namespace Ui
 					if (h.Ms < from || h.Ms >= to) { continue; }
 					size_t b = static_cast<size_t>((h.Ms - from) / kBin);
 					auto& a = byAlly[&p];
+					if (a.Bins.empty()) { a.Bins.assign(static_cast<size_t>(kBins), 0.0); }
 					a.P = &p; a.Damage += h.Damage; a.Bins[b] += h.Damage;
 					bySkill[h.Skill].first += h.Damage; bySkill[h.Skill].second++;
 					if (h.Enemy >= 0) { enemies.insert(h.Enemy); }
@@ -1668,7 +1693,7 @@ namespace Ui
 						invWhy = "invulnerable " + Secs(gv.Ms - sp.T) + " (" + (gv.By == idx ? std::string("own ") + skill : (gv.By >= 0 ? f.Players[gv.By].Name + "'s " : std::string()) + skill) + ")";
 					}
 				}
-				float cx = lp.x + laneW * 0.5f;
+				float cx = lp.x + laneW * static_cast<float>((sp.T - from) / double(to - from));
 				dl->AddLine(ImVec2(cx, lp.y), ImVec2(cx, lp.y + rh), ink, 1.5f);
 				std::string dmg = Num(a.Damage);
 				dl->AddText(ImVec2(p.x + dmgX - ImGui::CalcTextSize(dmg.c_str()).x, p.y + 2), ink, dmg.c_str());
@@ -1725,7 +1750,7 @@ namespace Ui
 		s.SpikeOpen = -1;
 
 		// Stability over time opens from the Stability card ("Over time >"; the Spikes / Stability over time switch did the
-		// same, the user, 2026-09-30) and has its way back
+		// same) and has its way back
 		if (s.RoundView == 1)
 		{
 			if (ImGui::Button("< Round")) { s.RoundView = 0; }

@@ -116,6 +116,11 @@ namespace Analysis
 		std::vector<std::pair<int32_t, int32_t>> StabOnMe; // merged spans with any stability on the player
 		std::vector<int32_t> DamagePerS, HealPerS;          // per second of the fight
 		std::vector<int32_t> CleanseMs, StripMs;            // when they removed an ally's condition, an enemy's boon
+		std::vector<int32_t> CcOutMs;                       // when their CC landed on an enemy player
+		// Conditions the enemy put on this player: how many, and the spans under the hard ones (immobilize, chill, cripple,
+		// fear), merged (the struggle view: condition pressure beyond the cleansing went with losing)
+		int CondsIn = 0;
+		std::vector<std::pair<int32_t, int32_t>> HardCondOn, ImmobOn; // ImmobOn: immobilize alone (pinned, not slowed)
 		// What happened to this player, for the stability view and the cause-of-death review (ms from fight start)
 		// Enemy: index in Fight::Enemies. Barrier: the part of Damage that barrier took (strikes; the rest hit health)
 		struct TakenHit { int32_t Ms, Skill, Damage; int Enemy = -1; int32_t Barrier = 0; };
@@ -123,7 +128,7 @@ namespace Analysis
 		std::vector<TakenHit> HitsOut;                       // this player's damage to enemy players (Enemy: who), for the spike breakdown
 		std::vector<std::pair<int32_t, int32_t>> HealsIn;    // (ms, healing received)
 		// Boons the enemy removed from this player. Corrupted: turned into a condition (a condition from the same enemy
-		// within 10 ms: a third of the strips in the user's logs), else stripped.
+		// within 10 ms: a third of the strips in the logs), else stripped.
 		struct StripHit { int32_t Ms; int Boon; int Enemy = -1; bool Corrupted = false; };
 		std::vector<StripHit> StripsIn;
 		struct CcHit { int32_t Ms; int32_t Duration; CcKind Kind; int Enemy = -1; }; // Enemy: index in Fight::Enemies
@@ -202,6 +207,13 @@ namespace Analysis
 			std::vector<Span> DownSpans;                 // downed (Dead false) and dead (Dead true), as for players
 			bool Fought = false;                         // hit us or took our hits: counted in EnemyCount (the enemy squad)
 			int Team = -1;                               // WvW team: 0 red, 1 blue, 2 green, -1 unknown
+			// What allies did to this enemy. The log holds an enemy's buffs only where allies caused them, so this is all
+			// there is of their side: ally CC that landed, stability stacks ally CC used up (CC their stability blocked),
+			// boons allies stripped (Boon: kBoonNames index), and the hard conditions allies put on them (immobilize,
+			// chill, cripple, fear; ImmobOn: immobilize alone), merged. By: Players index (-1 unknown).
+			struct Touch { int32_t Ms = 0; int By = -1; int Boon = -1; };
+			std::vector<Touch> CcIn, StabBlocked, StripsIn;
+			std::vector<std::pair<int32_t, int32_t>> HardCondOn, ImmobOn;
 		};
 		std::vector<Enemy>    Enemies;   // enemy players who hit us or had a position: spec, positions, health, downs
 		int                   SquadDowns = 0, SquadDeaths = 0, EnemyDowns = 0, EnemyDeaths = 0;
@@ -231,6 +243,9 @@ namespace Analysis
 		// Resurrection), 5 absorbed by other invulnerability. Player: Players index; Enemy: Enemies index (-1 an NPC or siege).
 		struct Negated { int32_t Ms = 0; int32_t Skill = 0; int Player = -1, Enemy = -1; uint8_t Kind = 0; };
 		std::vector<Negated> NegatedHits;
+		// Stun breaks (ArcDPS: a disable stopped early, with the ms it had left): on an ally (Player) or an enemy (Enemy)
+		struct StunBreak { int32_t Ms = 0; int Player = -1, Enemy = -1; int32_t Left = 0; };
+		std::vector<StunBreak> StunBreaks;
 		std::vector<std::pair<int32_t, int>> StrikesIn; // each enemy strike that landed on an ally: (ms, Players index), in time order
 		// Distortion put on one of ours (their own, or a Tale of the August Queen): when, how long, who gave it (Players index, -1 not
 		// one of ours) and who got it
@@ -250,13 +265,14 @@ namespace Analysis
 		std::vector<Pulse> Pulses;
 		std::map<int32_t, std::string> SkillNames;
 		uint32_t MapId = 0;
+		uint32_t ServerStart = 0; // the server's unix time at squad combat start (CBTS_SQCOMBATSTART value): the same for every recorder
 		// WvW teams: the round's team ids for red, blue and green (the log's WvW teams event), and the squad's colour
 		// (0 red, 1 blue, 2 green, -1 unknown). Each enemy's is Enemy::Team: two enemy teams in one fight are told apart.
 		std::array<uint32_t, 3> TeamIds{};
 		int SquadTeam = -1;
-		// Players are named by account in Edge of the Mists (968), where other worlds' players have no character name
-		// (a placeholder like "ag1458" or their WvW rank, "Mithril Champion"), and whenever a squad name looks like that
-		// elsewhere; by character name in normal WvW (the Rezz Order rule, 2026-09-24)
+		// Players are named by account in Edge of the Mists (968), where other worlds' players have no character name (a
+		// placeholder like "ag1458" or their WvW rank, "Mithril Champion"), and whenever a squad name looks like that
+		// elsewhere; by character name in normal WvW (the Rezz Order rule)
 		bool AccountNames = false;
 
 		double SquadGeneration(const Player& aPlayer, int aBoon) const;

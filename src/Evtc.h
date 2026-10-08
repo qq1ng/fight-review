@@ -60,6 +60,7 @@ namespace Evtc
 		SC_SqCombatEnd = 10,
 		SC_WeapSwap = 11,
 		SC_PointOfView = 13,
+		SC_Language = 14,     // src: the client's text language (0 English, 2 French, 3 German, 4 Spanish, 5 Chinese)
 		SC_GwBuild = 15,
 		SC_BuffInitial = 18,
 		SC_BuffActive = 27,
@@ -78,7 +79,8 @@ namespace Evtc
 		SC_BuffRemoveSingle = 71,
 		SC_BuffRemoveAll = 72,
 		SC_Teleport = 85,     // src: moved by a teleport (own or an enemy pull)
-		SC_TeamChange = 22,   // src's team: dst the new id, else (this ArcDPS build, 2026-10-05) value
+		SC_TeamChange = 22,   // src's team: dst the new id, else (this ArcDPS build) value
+		SC_StunBreak = 56,    // src's disable stopped early (a stun break); value: ms it had left. Who broke it isn't said
 		SC_WvwTeams = 74,     // uint32[6] over src, dst, value, buff_dmg: red, blue, green shard; red, blue, green team id
 	};
 

@@ -23,9 +23,9 @@ namespace Ui
 		const Player::Point* PosAt(const Player& p, int32_t aMs) { return NearestPos(p, aMs); }
 
 		// The squad's revive order: Tempests and Catalysts (Glyph of Renewal, the fastest), then Mesmers (Illusion of
-		// Life), then Druids (Spirit of Nature) and Paragons (Battle Standard). The usual order (the user, 2026-09-24
-		// and 25): Tempests and Catalysts first, then Mesmers by subgroup, then Druids and Paragons by subgroup, a Druid
-		// and a Paragon in the same subgroup in either order. The player can set their own.
+		// Life), then Druids (Spirit of Nature) and Paragons (Battle Standard). The usual order: Tempests and Catalysts
+		// first, then Mesmers by subgroup, then Druids and Paragons by subgroup, a Druid and a Paragon in the same
+		// subgroup in either order. The player can set their own.
 		constexpr int32_t kGlyphOfRenewal = 5573;
 		bool IsGlyphOfRenewal(int32_t aSkill) { return aSkill == 5573 || (aSkill >= 5760 && aSkill <= 5763); } // + its attuned versions
 
@@ -76,11 +76,11 @@ namespace Ui
 		}
 
 		// Did they carry their revive tool this round? Yes if they used it. No if the slot evidently held something
-		// else: a Mesmer with three other utility skills (the user's rule: some run Veil or are DPS), a Druid or Paragon
-		// with another elite. Instant skills leave no cast, so one round rarely shows all three: the evidence runs back
-		// to their last use of the tool (other utilities seen since then: they swapped it out; the user ran Illusion of
-		// Life for the first hour of 30 Sept, then Veil, and stayed in the order), else forward to their next use, else
-		// over the whole night. Otherwise assumed yes.
+		// else: a Mesmer with three other utility skills, a Druid or Paragon with another elite. Instant skills leave no
+		// cast, so one round rarely shows all three: the evidence runs back to their last use of the tool (other
+		// utilities seen since then: they swapped it out; a Mesmer ran Illusion of Life for the first hour of 30 Sept,
+		// then Veil, and stayed in the order), else forward to their next use, else over the whole night. Otherwise
+		// assumed yes.
 		bool Carries(const Ctx& c, const Player& p, int32_t aTool)
 		{
 			auto used = [&](const Player& q) { return std::any_of(q.ReviveUses.begin(), q.ReviveUses.end(), [&](const auto& u) { return SameTool(u.Skill, aTool); }); };
@@ -219,8 +219,8 @@ namespace Ui
 					skipped += (skipped.empty() ? "" : ", ") + t.P->Name + ": " + reason(*t.P, r.U.Ms);
 					nSkipped++;
 				}
-				// short in the table (the user, 2026-09-26: it wrapped a few letters a line), who and why on hover; no
-				// verdict for a cast with nobody down in reach (the turn didn't matter then)
+				// short in the table, who and why on hover; no verdict for a cast with nobody down in reach (the turn
+				// didn't matter then)
 				verdict[i] = r.U.DownNear == 0 ? "nobody down" : skipped.empty() ? "yes" : "no, " + std::to_string(nSkipped) + " skipped";
 				skippedWho[i] = skipped;
 				early += !skipped.empty() && r.U.DownNear > 0;
